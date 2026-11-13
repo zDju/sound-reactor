@@ -10,7 +10,7 @@ dependencies = [
     "pyside6-essentials>=6.12.0",
     "python-xlib>=0.33; sys_platform == 'linux'",
     # a fixed commit, as a GitHub archive: installs need no Git
-    "sound-event-detector @ https://github.com/zDju/sound-event-detector/archive/24b02ced7c68a2bb004914c930df7b2182900bb7.zip",
+    "sound-event-detector @ https://github.com/zDju/sound-event-detector/archive/0cd981b318fb19474b0281997937f3f70278d5b5.zip",
 ]
 
 [project.scripts]

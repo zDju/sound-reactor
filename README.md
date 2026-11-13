@@ -6,8 +6,9 @@ list of key presses and waits, sent to one window. Its first use is a test: fish
 Warcraft on Linux (cast, hear the bite, interact, recast). See `PLAN.md` for what was measured
 and why.
 
-> **Platform status.** Used on Linux (X11 or XWayland). Windows 10 2004+ / 11 is implemented
-> but **unverified on real hardware**; testers follow
+> **Platform status.** Used on Linux (X11 or XWayland). Windows 11: **verified on one
+> computer** (build 26300; 100 casts, 92 bites, keys, focus, display and the window all
+> working). Windows 10 2004+ is implemented but not confirmed; testers follow
 > [docs/windows-testing.md](docs/windows-testing.md).
 
 ## Safety

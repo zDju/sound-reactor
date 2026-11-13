@@ -11,7 +11,8 @@ ignore_after_action = 1.5
 start_delay = 5.0
 
 [sounds.bite]
-min_level_db = -40.0
+# On Windows 11 the splash measured -48 to -37 dBFS (92 bites); -40, as on Linux, misses most.
+min_level_db = -55.0
 pitch_tolerance = 0.06
 template_length = 0.3
 

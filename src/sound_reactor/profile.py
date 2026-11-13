@@ -284,7 +284,8 @@ def loads(text: str) -> Profile:
 def load(path: str | Path) -> Profile:
     path = Path(path)
     try:
-        text = path.read_text(encoding="utf-8")
+        # utf-8-sig: Windows PowerShell 5.1 (Set-Content -Encoding utf8) writes a byte order mark
+        text = path.read_text(encoding="utf-8-sig")
     except OSError as e:
         raise ProfileError(f"cannot read {path}: {e.strerror or e}") from e
     except UnicodeDecodeError as e:

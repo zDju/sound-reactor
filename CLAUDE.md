@@ -21,5 +21,6 @@ what was measured about the game, the display, input options and bite detection,
   (`uv tool install --no-sources https://github.com/zDju/sound-reactor/archive/refs/heads/main.zip
   --with-executables-from sound-event-detector`) and CI (`uv sync --no-sources`) take the pinned
   archive; without `--no-sources` uv looks for the path.
-- Windows (`win32.py`) is unverified on real hardware; testers follow `docs/windows-testing.md`.
+- Windows (`win32.py`) is verified on one Windows 11 computer (2026-11-13, see `PLAN.md`) and
+  not yet on Windows 10; testers follow `docs/windows-testing.md`.
   Tests use the simulated Windows in `tests/winfakes.py` and never call the real SendInput.

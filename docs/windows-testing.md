@@ -2,8 +2,9 @@
 
 sound-reactor listens to one application's sound and answers a sound with key presses: here,
 fishing in World of Warcraft (Forever client): cast, hear the bite, loot, cast again. It works on
-Linux; **on Windows nothing has been tried on a real computer yet**, and that is what this test is
-for. It takes about 45 minutes. Steps 1–5 send no keys to the game; only step 6 does.
+Linux, and on one Windows 11 computer (build 26300: 92 bites in 100 casts, keys, focus, display
+kept on and the window all working). This test tells whether it works on yours, above all on
+Windows 10. It takes about 45 minutes. Steps 1–5 send no keys to the game; only step 6 does.
 
 Copy the output of each step as you go (see step 7 for what to send back).
 
@@ -62,7 +63,7 @@ sounddetector monitor -s app:Wow.exe -r C:\Windows\Media\tada.wav --debug
 ```
 
 (`tada.wav` is only there because `monitor` needs something to look for.) Fish a few casts by
-hand. Every second a line shows `level ... dBFS`: it should go up (around −40 to −20) when the
+hand. Every second a line shows `level ... dBFS`: it should go up (around −50 to −20) when the
 game makes sound and down when it is quiet, also while PowerShell is in front. Ctrl+C stops it.
 
 ## 3. Make the "bite" sound
@@ -109,12 +110,13 @@ delete that clip from `%LOCALAPPDATA%\sound-event-detector\bite` and add the fil
 **Then, A or B,** set the sound's options and look at it:
 
 ```powershell
-sounddetector set bite --threshold 0.8 --pitch-tolerance 0.06 --template-length 0.3 --min-level -40
+sounddetector set bite --threshold 0.8 --pitch-tolerance 0.06 --template-length 0.3 --min-level -55
 sounddetector events
 ```
 
-`events` should show `bite: 4 clip(s), threshold 0.8, ..., min level -40 dBFS, ..., pitch ±6%,
-first 0.3s of each clip` and the clip files, each 0.8 s long (`add` printed the times).
+`events` should show `bite: 4 clip(s), threshold 0.8, ..., min level -55 dBFS, ..., pitch ±6%,
+first 0.3s of each clip` and the clip files, each 0.8 s long (`add` printed the times). The
+minimum level is lower than on Linux (−40): on Windows the splash measured −48 to −37 dBFS.
 
 Check it, still fishing by hand, 5 casts:
 

@@ -451,6 +451,31 @@ Order: 1 (running) → 2–4 (after the user checks v1 in the game) → testers 
   stops a run cleanly, the UIPI check on their setup, the game's executable and window title,
   and the GUI under Windows.
 
+### First test on real Windows (2026-11-13, evening)
+
+The user's Windows 11 computer (build 26300, not elevated), WoW (`Wow.exe`, window `World of
+Warcraft`), en-US layout; development setup from the two clones (`uv sync`, Python 3.12.16).
+
+- Test suites: detector 116 passed, sound-reactor 186 passed; the detector's real WASAPI tests
+  with `SOUNDDETECTOR_REQUIRE_WASAPI=1` 7/7. `doctor`: source playing audio, window found, scan
+  codes 9 = 0x0A and f = 0x21, administrator rights OK, start ready, no warnings.
+- `monitor`, by hand: 2/2 bites, similarity 0.95, at −38.6 and −39.2 dBFS. Listen only: 3/3,
+  at −43.0, −43.1 and −47.6: the bite is quieter than on Linux, and `min_level_db = -40` would
+  have missed most of them.
+- Live run, 100 cycles at −50 dBFS: 34 min, 92 bites, 8 silent cycles (never two in a row),
+  193 keys, no errors; similarity 0.82–0.98 (mean 0.95), level −48.4 to −36.8 dBFS (mean −42,
+  21 below −45). 9 cast, F looted, start on focus, display kept on, clean stop at max_cycles.
+  The 8 silent cycles are unexplained (no recording): a missed cast or a bite below −50. The
+  Windows example and guide now use −55.
+- An earlier live run (26 cycles, 22 bites) ended without a stop line: the Claude desktop app
+  updated itself and closed the terminal that had started the window. Not a sound-reactor
+  problem.
+- A profile saved by Windows PowerShell 5.1 (`Set-Content -Encoding utf8`) starts with a byte
+  order mark and was "not valid TOML"; profiles and the detector's `event.toml` are now read
+  as `utf-8-sig` (detector pin moved to 0cd981b for it).
+- Not tried yet: Windows 10, switching away or holding a key to stop, closing the console during a run, the
+  elevation mismatch, other keyboard layouts.
+
 ## Not decided yet
 
 Language/stack follows the detector (Python 3.12+, uv, pytest, ruff). Vision only if question 1

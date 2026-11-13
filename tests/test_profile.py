@@ -118,6 +118,13 @@ def test_a_file_that_is_not_utf8(tmp_path):
         profiles.load(bad)
 
 
+def test_a_file_with_a_byte_order_mark(tmp_path):
+    # as Windows PowerShell 5.1 saves it with Set-Content -Encoding utf8
+    path = tmp_path / "bom.toml"
+    path.write_bytes(b'\xef\xbb\xbfsource = "app:x"\n')
+    assert profiles.load(path).source == "app:x"
+
+
 def test_actions_as_text_keep_exact_values():
     actions = [Wait(0.123456789), Wait(30.0), Wait(1e-05), Key("F1")]
     text = profiles.format_actions(actions)
