@@ -231,7 +231,7 @@ def test_where_the_packages_came_from(monkeypatch):
         "main": {"url": "https://github.com/zDju/sound-reactor/archive/refs/heads/main.zip",
                  "archive_info": {}},
         "git": {"url": "https://github.com/zDju/x", "vcs_info": {"commit_id": "abcdef0123"}},
-        "editable": {"url": f"file://{Path.home()}/src/x", "dir_info": {"editable": True}},
+        "editable": {"url": (Path.home() / "src" / "x").as_uri(), "dir_info": {"editable": True}},
     }  # fmt: skip
     monkeypatch.setattr(doctor.metadata, "distribution", lambda name: Dist(origins[name]))
     assert doctor.distribution("pinned") == "0.1.0 (github zDju/sound-event-detector @ 24b02ce)"

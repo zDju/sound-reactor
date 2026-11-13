@@ -27,7 +27,13 @@ from sound_reactor.runner import Run, RunError
 pytest.importorskip("PySide6")
 from PySide6.QtCore import QEventLoop, QSettings, QSize
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QApplication, QDoubleSpinBox, QGroupBox, QPushButton
+from PySide6.QtWidgets import (
+    QApplication,
+    QDoubleSpinBox,
+    QGroupBox,
+    QPushButton,
+    QWidget,
+)
 
 from sound_reactor.gui import (
     COL_LENGTH,
@@ -445,9 +451,12 @@ def test_problems_while_starting_are_shown(window, tmp_path, monkeypatch):
     window.set_profile(Profile(source=f"file:{wav}", sounds={"chirp": {}}))
     blocker = tmp_path / "not-a-folder"
     blocker.write_text("")
-    monkeypatch.setenv("XDG_STATE_HOME", str(blocker))  # run folders cannot be created
+    monkeypatch.setenv("XDG_STATE_HOME", str(blocker))  # run folders cannot be created (Linux)
+    monkeypatch.setenv("LOCALAPPDATA", str(blocker))  # (Windows)
     assert not window.start_run(live=False)
-    assert "NotADirectoryError" in window.problems_label.text()
+    text = window.problems_label.text()
+    # Linux: NotADirectoryError; Windows: FileExistsError (the file is where the folder goes)
+    assert "NotADirectoryError" in text or "FileExistsError" in text, text
     assert window.try_button.isEnabled()
 
 
@@ -545,8 +554,30 @@ def test_no_horizontal_scrolling(app, window, size):
     window.advanced.set_expanded(True)
     window.resize(size)
     app.processEvents()
-    assert window.size() == size  # the window can be this small
+    assert window.size() == size, layout_report(app, window)  # the window can be this small
     assert window.config_scroll.horizontalScrollBar().maximum() == 0
+
+
+def layout_report(app, window) -> str:
+    """What makes the window wide: the font and the widest widgets (for a failure on CI)."""
+    font = app.font()
+    screen = app.primaryScreen()
+    dpi = screen.logicalDotsPerInch() if screen is not None else 0.0
+    wide = sorted(
+        (
+            w.minimumSizeHint().width(),
+            type(w).__name__,
+            (getattr(w, "text", lambda: "")() or "")[:40],
+        )
+        for w in window.findChildren(QWidget)
+        if w.isVisible()
+    )[-8:]
+    lines = [
+        f"font {font.family()!r} {font.pointSizeF()}pt px={font.pixelSize()} dpi={dpi}",
+        f"window minimum {window.minimumSizeHint().width()}",
+        *(f"  {width} {kind} {text!r}" for width, kind, text in reversed(wide)),
+    ]
+    return "\n".join(lines)
 
 
 # -- runs with fake audio and a fake keyboard ----------------------------------------------
