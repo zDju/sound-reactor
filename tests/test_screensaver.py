@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from sound_reactor import screensaver
+screensaver = pytest.importorskip(
+    "sound_reactor.screensaver", reason="the session bus (jeepney) is Linux only"
+)
 
 
 class FakeConnection:

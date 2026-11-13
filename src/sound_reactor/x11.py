@@ -16,6 +16,8 @@ from Xlib import XK, X, display
 from Xlib.error import XError
 from Xlib.protocol import event
 
+from .keys import describe_held
+
 KEY_HOLD = 0.06  # s between KeyPress and KeyRelease
 BUTTON_MASKS = (X.Button1Mask, X.Button2Mask, X.Button3Mask, X.Button4Mask, X.Button5Mask)
 
@@ -102,15 +104,6 @@ def held_input(d: display.Display) -> tuple[list[int], list[int]]:
     return keycodes, buttons
 
 
-def describe_held(keys: list[str], buttons: list[int]) -> str | None:
-    parts = []
-    if keys:
-        parts.append(f"key(s) {', '.join(keys)}")
-    if buttons:
-        parts.append(f"mouse button(s) {', '.join(map(str, buttons))}")
-    return " and ".join(parts) or None
-
-
 def send_key(d: display.Display, w: Any, keycode: int, hold: float = KEY_HOLD) -> None:
     """Press and release ``keycode`` in window ``w`` with XSendEvent; the release is attempted
     even if the hold is interrupted."""
@@ -177,6 +170,9 @@ class Target:
             f"key {key!r} needs a modifier on this layout (the key gives {plain!r} without one) "
             "and modifiers are not sent; bind the action to a key without modifiers"
         )
+
+    def describe_key(self, key: str) -> str:
+        return f"keycode {self.keycode(key)}"
 
     def press(self, key: str) -> None:
         send_key(self.display, self.window, self.keycode(key))

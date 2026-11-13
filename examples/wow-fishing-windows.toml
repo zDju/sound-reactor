@@ -1,0 +1,32 @@
+# Fishing in World of Warcraft (Forever client) on Windows 10 2004+ / 11: the first test, three
+# casts. See docs/windows-testing.md, step by step.
+# Replace app:REPLACE-ME.exe below with the game's entry that `sound-reactor doctor` lists under
+# "applications playing audio" (for example app:Wow.exe), and check the window title there too.
+# In the game: Fishing on key 9, Interact With Target on F, Enable Interact Key and Auto Loot on,
+# Sound in Background on. The sound "bite" is an event in the detector library, made from splash
+# clips as in step 3 of docs/windows-testing.md.
+source = "app:REPLACE-ME.exe"
+target = "World of Warcraft"
+ignore_after_action = 1.5
+start_delay = 5.0
+
+[sounds.bite]
+min_level_db = -40.0
+pitch_tolerance = 0.06
+template_length = 0.3
+
+[on_start]
+actions = [{ key = "9" }]
+
+[[on_sound]]
+sound = "bite"
+actions = [{ wait = 0.25 }, { key = "f" }, { wait = 2.5 }, { key = "9" }]
+
+[on_silence]
+seconds = 30.0
+actions = [{ key = "9" }]
+
+[stop]
+max_minutes = 10.0
+max_silent_in_row = 3
+max_cycles = 3

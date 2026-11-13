@@ -1,15 +1,14 @@
 """Turning a profile into a run: sounds from the detector library, the audio source, the target
 window (or nothing, in a dry run), a run folder, and the engine. Shared by the CLI and the GUI.
 
-Each run gets a folder outside the repository (``~/.local/state/sound-reactor/runs/`` by
-default) holding ``log.txt``, ``counters.json``, a copy of the profile and, if asked for, the
-recorded source audio.
+Each run gets a folder outside the repository (``~/.local/state/sound-reactor/runs/`` on Linux,
+``%LOCALAPPDATA%\\sound-reactor\\runs`` on Windows, see :mod:`.paths`) holding ``log.txt``,
+``counters.json``, a copy of the profile and, if asked for, the recorded source audio.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
 import threading
 from collections.abc import Callable
@@ -21,8 +20,9 @@ from typing import TextIO
 from sound_event_detector import DEFAULT_PARAMS, FileSource, Library, SoundEvent, open_source
 from sound_event_detector.capture import Source
 
+from . import desktop, paths
 from . import profile as profiles
-from . import x11
+from .desktop import Backend, Target
 from .engine import (
     MIN_LIVE_START_DELAY,
     Clock,
@@ -37,7 +37,6 @@ from .engine import (
 )
 from .listen import LiveListener, Recorder, ReplayListener
 from .profile import Profile
-from .screensaver import ScreenSaverInhibitor
 
 SAMPLE_RATE = DEFAULT_PARAMS.sample_rate
 
@@ -47,12 +46,11 @@ class RunError(Exception):
 
 
 def state_home() -> Path:
-    base = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state"
-    return Path(base) / "sound-reactor"
+    return paths.state_home()
 
 
 def runs_dir() -> Path:
-    return state_home() / "runs"
+    return paths.runs_dir()
 
 
 def replay_path(source: str) -> Path | None:
@@ -61,8 +59,9 @@ def replay_path(source: str) -> Path | None:
     return Path(value).expanduser() if sep and kind == "file" else None
 
 
-def problems(p: Profile, *, dry_run: bool) -> list[str]:
-    """What prevents ``p`` from running (empty: nothing found)."""
+def problems(p: Profile, *, dry_run: bool, backend: Backend | None = None) -> list[str]:
+    """What prevents ``p`` from running (empty: nothing found). Key names are checked against
+    ``backend`` (this platform's by default)."""
     found = []
     if not p.source.strip():
         found.append("the profile has no source")
@@ -78,11 +77,8 @@ def problems(p: Profile, *, dry_run: bool) -> list[str]:
         found.append(f"start_delay must be at least {MIN_LIVE_START_DELAY:g} s for a live run")
     if not p.sound_names():
         found.append("the profile has no sounds")
-    for key in p.key_names():
-        try:
-            x11.keysym(key)
-        except ValueError as e:
-            found.append(str(e))
+    key_error = (backend or desktop.current()).key_error
+    found += [error for key in p.key_names() if (error := key_error(key)) is not None]
     return found
 
 
@@ -148,7 +144,8 @@ def prepare(
     False. Raises :class:`RunError` when the profile cannot run; anything opened is closed again
     if preparing fails.
     """
-    found = problems(p, dry_run=dry_run)
+    backend = desktop.current()
+    found = problems(p, dry_run=dry_run, backend=backend)
     recording = None if record is True or not record else Path(record).expanduser()
     if recording is not None and recording.exists():
         found.append(f"{recording} already exists; recordings never overwrite a file")
@@ -156,14 +153,14 @@ def prepare(
         raise RunError("; ".join(found))
     events = load_events(p, library or Library())
 
-    target: x11.Target | None = None
+    target: Target | None = None
     if not dry_run:
         try:
-            target = x11.Target.find(p.target)
+            target = backend.find_target(p.target)
         except LookupError as e:
             raise RunError(str(e)) from e
         except Exception as e:  # no X server, refused connection
-            raise RunError(f"cannot reach the X server: {type(e).__name__}: {e}") from e
+            raise RunError(f"cannot reach {backend.reach}: {type(e).__name__}: {e}") from e
     log_file = None
     try:
         if target is not None:
@@ -173,6 +170,7 @@ def prepare(
                     target.keycode(key)
                 except ValueError as e:
                     bad.append(str(e))
+            bad += backend.target_problems(target)  # e.g. a game running as administrator
             if bad:
                 raise RunError("; ".join(bad))
 
@@ -182,7 +180,7 @@ def prepare(
             recording = folder / "audio.wav"
         log_file = (folder / "log.txt").open("a", encoding="utf-8")
         run = _assemble(
-            p, events, target, folder, recording, log_file, dry_run,
+            p, events, target, folder, recording, log_file, dry_run, backend,
             on_log, on_counters, on_meter, on_state, on_finish,
         )  # fmt: skip
     except BaseException:
@@ -197,11 +195,12 @@ def prepare(
 def _assemble(
     p: Profile,
     events: list[SoundEvent],
-    target: x11.Target | None,
+    target: Target | None,
     folder: Path,
     recording: Path | None,
     log_file: TextIO,
     dry_run: bool,
+    backend: Backend,
     on_log: Callable[[str], object] | None,
     on_counters: Callable[[Counters], object] | None,
     on_meter: Callable[[Meter], object] | None,
@@ -271,7 +270,7 @@ def _assemble(
         clock,
         focused=target.focused if target is not None else None,
         dry_run=dry_run,
-        inhibitor=None if dry_run else ScreenSaverInhibitor(),
+        inhibitor=None if dry_run else backend.inhibitor(),
         on_log=log,
         on_counters=counters,
         on_meter=on_meter,

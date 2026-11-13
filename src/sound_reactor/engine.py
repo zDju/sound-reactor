@@ -20,9 +20,9 @@ Cycle (generalised from ``spikes/fish_cycle.py``):
 
 A live run only *arms* at first: it begins when the target window gains focus after not having
 it (Alt+Tab into it), followed by ``start_delay`` seconds. From that switch until it stops it
-holds an :class:`Inhibitor`, so that an idle screen lock does not take focus (sent keys do not
-count as user activity). A dry run needs no focus, starts at once, never calls the keyboard and
-inhibits nothing.
+holds an :class:`Inhibitor`: on Linux so that an idle screen lock does not take focus (keys sent
+with XSendEvent do not count as user activity), on Windows to keep the display on. A dry run
+needs no focus, starts at once, never calls the keyboard and inhibits nothing.
 """
 
 from __future__ import annotations
@@ -153,18 +153,40 @@ class Listener(Protocol):
         ...
 
 
+class KeyNotSent(Exception):
+    """A :class:`Keyboard` checked once more right before a key and did not send it (on
+    Windows: the target was no longer the foreground window). The run stops for that reason,
+    as it does when the engine's own focus check fails."""
+
+
+class FocusLostDuringKey(Exception):
+    """A :class:`Keyboard` sent the key, but the target lost focus while it was held (its
+    key-up went elsewhere). The run stops, with a warning in the log."""
+
+
 class Keyboard(Protocol):
     def held(self) -> str | None:
         """What keys or mouse buttons are held right now (None: nothing)."""
         ...
 
     def press(self, key: str) -> None:
-        """Press and release ``key`` in the target window."""
+        """Press and release ``key`` in the target window (:class:`KeyNotSent`: not sent)."""
         ...
 
 
+# What the run log says about an Inhibitor; one can replace these with a ``texts`` attribute.
+INHIBITOR_TEXTS = {
+    "held": "screen lock inhibited while running",
+    "released": "screen lock inhibition released",
+    "failed": "could not keep the screen from locking ({error}); an idle screen lock will take "
+    "focus and stop the run",
+    "release_failed": "could not release the screen lock inhibition: {error}",
+}
+
+
 class Inhibitor(Protocol):
-    """Keeps the screen from locking (an idle lock would take focus and stop a live run)."""
+    """Keeps the screen from locking (an idle lock would take focus and stop a live run) or, on
+    Windows, the display on."""
 
     def inhibit(self, reason: str) -> str:
         """Hold the inhibition; returns a description for the log. Raises if it cannot."""
@@ -373,19 +395,21 @@ class Engine:
         self._inhibit()
         self._pause(self.profile.start_delay, "before the start")
 
+    def _inhibitor_text(self, which: str, **values: str) -> str:
+        texts = {**INHIBITOR_TEXTS, **getattr(self.inhibitor, "texts", {})}
+        return texts[which].format(**values)
+
     def _inhibit(self) -> None:
         if self.inhibitor is None:
             return
         try:
             how = self.inhibitor.inhibit(f"reacting to sounds in {self.profile.target!r}")
         except Exception as e:
-            self._log(
-                f"WARNING: could not keep the screen from locking ({type(e).__name__}: {e}); "
-                "an idle screen lock will take focus and stop the run"
-            )
+            error = f"{type(e).__name__}: {e}"
+            self._log(f"WARNING: {self._inhibitor_text('failed', error=error)}")
             return
         self._inhibited = True
-        self._log(f"screen lock inhibited while running ({how})")
+        self._log(f"{self._inhibitor_text('held')} ({how})")
 
     def _uninhibit(self) -> None:
         if not self._inhibited or self.inhibitor is None:
@@ -394,9 +418,10 @@ class Engine:
         try:
             self.inhibitor.release()
         except Exception as e:
-            self._log(f"could not release the screen lock inhibition: {type(e).__name__}: {e}")
+            error = f"{type(e).__name__}: {e}"
+            self._log(self._inhibitor_text("release_failed", error=error))
         else:
-            self._log("screen lock inhibition released")
+            self._log(self._inhibitor_text("released"))
 
     def _cycle(self) -> None:
         p, c = self.profile, self.counters
@@ -463,8 +488,19 @@ class Engine:
             if held:
                 raise _Stop(f"{held} held before key {key!r}; not sent", error=True)
             self._check()
-            self.keyboard.press(key)
+            try:
+                self.keyboard.press(key)
+            except KeyNotSent as e:
+                raise _Stop(f"{e} (key {key!r} not sent)") from e
+            except FocusLostDuringKey as e:
+                self._log(f"  key {key}")
+                self._key_done()
+                self._log(f"WARNING: {e}")
+                raise _Stop(f"the target window lost focus while key {key!r} was held") from e
             self._log(f"  key {key}")
+        self._key_done()
+
+    def _key_done(self) -> None:
         self._last_key = self.clock.now()
         self.counters.keys += 1
         self._changed()

@@ -346,10 +346,11 @@ Deviations and choices:
 - **Live meter:** best (level-gated) similarity per sound plus the source level of the last
   block; a per-sound level of the best window is not exposed by `SoundDetector`.
 - **GUI (reworked after the first live use):** profile left, run right (coloured status line,
-  Start / Try without keys / Stop, problems under the buttons, counters, meter bars with a
+  Start / Listen only / Stop, problems under the buttons, counters, meter bars with a
   threshold marker, a summary with "Open run folder", log); New/Open/Save as/Replay in a
-  Profile menu; "Advanced" folded; action lists edited as text; threshold and min level edits
-  stay in the profile (no "Save to library"); remembers the last profile and the window size;
+  Profile menu; "Advanced" folded; action lists edited as text, a rule's sound from a list;
+  threshold, min level, pitch tolerance and clip length edits stay in the profile (no "Save to
+  library"); Use / New sound… / Add clips… for sounds; remembers the last profile and the window size;
   asks before dropping unsaved changes. The engine reports its phase through `on_state`.
 - **Screen lock (added after runs 09–10):** a live run holds
   `org.freedesktop.ScreenSaver.Inhibit` (session bus, via `jeepney`) from the switch into the
@@ -409,6 +410,46 @@ marked unverified until a tester confirms it.
    their sandboxes block other applications' audio streams and windows.
 
 Order: 1 (running) → 2–4 (after the user checks v1 in the game) → testers → 5.
+
+### Windows status (2026-11-13): items 2–4 built, unverified on Windows
+
+- `win32.py` (ctypes, no new dependency) behind the same interfaces, chosen by `sys.platform` in
+  `desktop.py`: EnumWindows/GetWindowTextW (visible, titled); focus = GetForegroundWindow is the
+  target's handle *and* process; SendInput with scan codes from the target thread's layout
+  (letters by VK_A–VK_Z, digits and punctuation by character, refused if they need a modifier),
+  return value checked, key-up always after key-down; focus checked again right before each key
+  (`KeyNotSent`: the run stops like a focus loss) and after its key-up (`FocusLostDuringKey`: a
+  warning, then the run stops); GetAsyncKeyState before each key; SetThreadExecutionState (keeps
+  the display on; SendInput counts as activity anyway) on a thread of its own. UIPI:
+  TokenElevation of both processes; a target that is elevated, or whose token cannot be read
+  (elevated, another user, anti-cheat, process gone), blocks Start unless sound-reactor itself
+  is elevated. Closing the console window: a SetConsoleCtrlHandler stops the run and waits up to
+  4 s (key-up, log, counters) before Windows ends the process (CLI and GUI).
+- `keys.py`: the portable key names (also the GUI's tooltips); on Linux other X names still work.
+  Numpad +, −, *, /, Enter included; numpad digits not (X11 needs Num Lock for them).
+- `paths.py`: Linux unchanged; Windows `%APPDATA%\sound-reactor` (profiles, `gui.conf`) and
+  `%LOCALAPPDATA%\sound-reactor\runs`. `sound-reactor doctor [PROFILE]` (home folder always as
+  `~`, the window's keyboard layout on Windows) and `--version` added. Profiles bound
+  `pitch_tolerance` (0–0.5) and `template_length` (0–10 s).
+- Install without Git: the detector dependency is the GitHub archive of a pinned commit
+  (24b02ce, which cuts the loudest sound in `add`); testers run `uv tool install --no-sources
+  https://github.com/zDju/sound-reactor/archive/refs/heads/main.zip --with-executables-from
+  sound-event-detector` and update with `--reinstall`. Verified from a zip of the working tree
+  with no `git` on PATH (both executables installed, the detector from the archive). A plain
+  install without `--no-sources` fails (uv applies the repository's path source). The first
+  version used `git+https` URLs; a tester's PC without Git could not install it. CI (Ubuntu,
+  Windows) runs `uv sync --no-sources`; not run on GitHub yet.
+- Checked under Wine (Windows Python 3.12, no display, audio drivers off): imports, structure
+  sizes (INPUT 40 bytes), the simulated-Windows tests and the real EnumWindows / layout / scan
+  code / elevation / execution-state / console-handler tests pass; SendInput is never called.
+  Wine's display-less keyboard reports lowercase letters as shifted, hence letters by virtual key.
+- `docs/windows-testing.md` and `examples/wow-fishing-windows.toml` (game executable to fill
+  in, 3 cycles). The splash clips: wow-fishing-forever's four (`add --length 0.8 --label NAME`
+  reproduces the user's `bite` clips exactly), or the tester's own recordings stopped right
+  after the splash. The first tester confirms: keys reach the game (scan codes, 9 casts, F
+  loots), Alt+Tab stops a run, a held key stops it, the display stays on, closing the console
+  stops a run cleanly, the UIPI check on their setup, the game's executable and window title,
+  and the GUI under Windows.
 
 ## Not decided yet
 

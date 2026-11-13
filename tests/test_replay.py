@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import logging
 import signal
+import sys
 import time
 import wave
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -22,14 +24,21 @@ from fakes import (
     make_replay,
     session,
 )
-from sound_reactor import cli, x11
+from sound_reactor import cli, desktop
 from sound_reactor import profile as profiles
 from sound_reactor.cli import main
 from sound_reactor.engine import Counters, Result, SystemClock
 from sound_reactor.listen import LiveListener, Recorder, ReplayListener
 from sound_reactor.profile import Key, Profile, SilenceRule, SoundRule, StopRules, Wait
 from sound_reactor.runner import NoKeyboard, RunError, prepare, problems
-from sound_reactor.screensaver import ScreenSaverInhibitor
+
+if sys.platform == "win32":
+    from sound_reactor.win32 import ExecutionStateInhibitor as PlatformInhibitor
+
+    x11 = None
+else:
+    from sound_reactor import x11
+    from sound_reactor.screensaver import ScreenSaverInhibitor as PlatformInhibitor
 
 CHIRPS = [5.0, 12.0, 14.0, 40.0]  # the one at 14.0 is heard while the 12.0 one is answered
 LENGTH = 50.0
@@ -219,8 +228,19 @@ def live_profile() -> Profile:
     )
 
 
+def patch_find(monkeypatch, find) -> None:
+    """Replace the window lookup: X11's on Linux (as the runner reaches it), else the
+    backend's."""
+    if x11 is not None:
+        monkeypatch.setattr(x11.Target, "find", find and staticmethod(find))
+    else:
+        real = desktop.current()
+        fail = lambda title: pytest.fail("looked for the window")  # noqa: E731
+        monkeypatch.setattr(desktop, "current", lambda: replace(real, find_target=find or fail))
+
+
 def use_target(monkeypatch, target) -> None:
-    monkeypatch.setattr(x11.Target, "find", staticmethod(lambda title, display_name=None: target))
+    patch_find(monkeypatch, lambda title, display_name=None: target)
 
 
 def test_live_prepare_wiring(tmp_path, monkeypatch):
@@ -231,7 +251,7 @@ def test_live_prepare_wiring(tmp_path, monkeypatch):
     run = prepare(live_profile(), runs_root=tmp_path / "runs", library=library)
     engine = run.engine
     assert engine.keyboard is target and engine.focused == target.focused
-    assert isinstance(engine.inhibitor, ScreenSaverInhibitor) and not engine.dry_run
+    assert isinstance(engine.inhibitor, PlatformInhibitor) and not engine.dry_run
     assert target.checked == ["9", "f"]  # every key checked against the live keymap
     # run it on fakes: no audio device, no session bus
     engine.listener = FakeListener(clock, [(15.0, "chirp", 0.9)])
@@ -246,7 +266,7 @@ def test_live_prepare_wiring(tmp_path, monkeypatch):
 
 def test_dry_prepare_never_looks_for_the_window(tmp_path, monkeypatch):
     _, library = make_replay(tmp_path, [], 1.0)
-    monkeypatch.setattr(x11.Target, "find", None)  # calling it would fail the test
+    patch_find(monkeypatch, None)  # calling it would fail the test
     run = prepare(live_profile(), dry_run=True, runs_root=tmp_path / "runs", library=library)
     assert isinstance(run.engine.keyboard, NoKeyboard)
     assert run.engine.inhibitor is None and run.engine.dry_run
@@ -255,10 +275,10 @@ def test_dry_prepare_never_looks_for_the_window(tmp_path, monkeypatch):
 
 def test_live_prepare_refuses_keys_that_need_a_modifier(tmp_path, monkeypatch):
     _, library = make_replay(tmp_path, [], 1.0)
-    target = FakeTarget(bad_keys={"exclam"})
+    target = FakeTarget(bad_keys={"slash"})  # a portable name that needs Shift on some layouts
     use_target(monkeypatch, target)
     p = live_profile()
-    p.on_start = [Key("exclam")]
+    p.on_start = [Key("slash")]
     with pytest.raises(RunError, match="needs a modifier"):
         prepare(p, runs_root=tmp_path / "runs", library=library)
     assert target.closed and not (tmp_path / "runs").exists()
@@ -277,7 +297,7 @@ def test_live_prepare_closes_the_window_when_a_later_step_fails(tmp_path, monkey
 
 def test_live_run_needs_the_minimum_start_delay(tmp_path, monkeypatch):
     _, library = make_replay(tmp_path, [], 1.0)
-    monkeypatch.setattr(x11.Target, "find", None)  # not reached
+    patch_find(monkeypatch, None)  # not reached
     p = live_profile()
     p.start_delay = 1.0
     with pytest.raises(RunError, match="at least 5 s for a live run"):
@@ -333,7 +353,7 @@ def test_cli_reports_prepare_failures_without_a_traceback(tmp_path, capsys):
     assert "cannot prepare the run" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGHUP])
+@pytest.mark.parametrize("sig", list(cli.STOP_SIGNALS))  # SIGTERM; SIGHUP or SIGBREAK
 def test_cli_stops_cleanly_on_sigterm_and_sighup(tmp_path, capsys, monkeypatch, sig):
     wav, _ = make_replay(tmp_path, CHIRPS, LENGTH)
     path = profiles.save(chirp_profile(wav), tmp_path / "p.toml")
@@ -363,9 +383,9 @@ def test_cli_stops_cleanly_on_sigterm_and_sighup(tmp_path, capsys, monkeypatch, 
     finally:
         signal.signal(sig, previous)
     assert unhandled == [] and code == 0
-    assert "stopped: SIG" in capsys.readouterr().out
+    assert f"stopped: {cli.STOP_SIGNALS[sig]}" in capsys.readouterr().out
     (counters,) = (tmp_path / "runs").glob("*/counters.json")
-    assert json.loads(counters.read_text())["stop_reason"].startswith("SIG")
+    assert json.loads(counters.read_text())["stop_reason"] == cli.STOP_SIGNALS[sig]
 
 
 # -- a real recording (local only, never in the repository) ------------------------------------

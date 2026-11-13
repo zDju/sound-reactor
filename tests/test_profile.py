@@ -63,6 +63,10 @@ def test_spec_shape_with_integers_loads():
         ("[sounds.bite]\nthreshold = 1.2", "<= 1"),
         ("[sounds.bite]\nmin_level_db = 3", "<= 0"),
         ("[sounds.bite]\ncooldown = -1", ">= 0"),
+        ("[sounds.bite]\npitch_tolerance = 6", r"pitch_tolerance must be <= 0\.5 \(a fraction"),
+        ("[sounds.bite]\npitch_tolerance = -0.1", r">= 0 \(a fraction of the speed: 0\.06 is"),
+        ("[sounds.bite]\ntemplate_length = 30", r"template_length must be <= 10 \(seconds"),
+        ("[sounds.bite]\ntemplate_length = -1", r"must be >= 0 \(seconds of each clip"),
         ("source = ", "not valid TOML"),
     ],
 )
@@ -101,6 +105,10 @@ def test_profile_names_live_in_the_config_folder(isolated_homes):
 def test_sound_setting_bounds():
     p = profiles.loads("[sounds.bite]\nthreshold = 1.0\nmin_level_db = 0\ncooldown = 0\n")
     assert p.sounds == {"bite": {"threshold": 1.0, "min_level_db": 0.0, "cooldown": 0.0}}
+    p = profiles.loads("[sounds.bite]\npitch_tolerance = 0.5\ntemplate_length = 10\n")
+    assert p.sounds == {"bite": {"pitch_tolerance": 0.5, "template_length": 10.0}}
+    p = profiles.loads("[sounds.bite]\npitch_tolerance = 0\ntemplate_length = 0\n")
+    assert p.sounds == {"bite": {"pitch_tolerance": 0.0, "template_length": 0.0}}
 
 
 def test_a_file_that_is_not_utf8(tmp_path):

@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Qt's libraries (offscreen GUI tests)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+      # --no-sources: the detector comes from GitHub (the pinned archive in pyproject.toml), not
+      # from ../sound-event-detector, which only exists on a developer's machine.
+      - name: Install
+        run: uv sync --no-sources
+      - name: Lint
+        run: |
+          uv run --no-sync ruff check src tests
+          uv run --no-sync ruff format --check src tests
+      - name: Tests (fakes and synthetic audio; the GUI offscreen; never real keys)
+        run: uv run --no-sync pytest -q -rs

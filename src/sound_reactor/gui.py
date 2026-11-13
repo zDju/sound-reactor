@@ -1,7 +1,7 @@
 """The window: the profile on the left, the run on the right.
 
 The run panel is meant to be watched from a second screen: a large coloured status line, the
-Start / Try without keys / Stop buttons, what would block a start, counters, a meter per sound
+Start / Listen only / Stop buttons, what would block a start, counters, a meter per sound
 and a short log. Errors are shown in the window, not in pop-ups; dialogs open only for files
 and for unsaved changes. The engine runs in its own thread and reaches the window through Qt
 signals.
@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -49,6 +50,8 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QSplitter,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
@@ -59,8 +62,8 @@ from sound_event_detector import Library, list_apps, load_wav
 from sound_event_detector.audio import find_end, find_onset, to_mono, trim
 from sound_event_detector.capture import AppStream, find_app
 
+from . import desktop, keys, paths
 from . import profile as profiles
-from . import x11
 from .engine import (
     ACTING,
     ARMED,
@@ -77,7 +80,69 @@ from .engine import (
 from .profile import Profile, ProfileError, SilenceRule, SoundRule, StopRules
 from .runner import Run, RunError, prepare, problems, replay_path
 
-COL_NAME, COL_CLIPS, COL_THRESHOLD, COL_MIN_LEVEL = range(4)
+COL_NAME, COL_CLIPS, COL_THRESHOLD, COL_MIN_LEVEL, COL_PITCH, COL_LENGTH = range(6)
+
+
+class SoundSetting:
+    """A detector setting edited per sound in the sounds table (shown = stored * ``scale``)."""
+
+    def __init__(
+        self,
+        key: str,
+        column: int,
+        header: str,
+        tip: str,
+        *,
+        minimum: float,
+        maximum: float,
+        decimals: int,
+        step: float,
+        scale: float = 1.0,
+        suffix: str = "",
+        zero: str = "",
+    ) -> None:
+        self.key, self.column, self.header, self.tip = key, column, header, tip
+        self.minimum, self.maximum, self.decimals, self.step = minimum, maximum, decimals, step
+        self.scale, self.suffix, self.zero = scale, suffix, zero
+
+    def spin(self) -> QDoubleSpinBox:
+        s = QDoubleSpinBox()
+        s.setRange(self.minimum, self.maximum)
+        s.setDecimals(self.decimals)
+        s.setSingleStep(self.step)
+        s.setSuffix(self.suffix)
+        if self.zero:
+            s.setSpecialValueText(self.zero)
+        return s
+
+    def stored(self, shown: float) -> float:
+        """The setting for a value shown in the box, without float noise from the scale."""
+        return round(shown / self.scale, self.decimals + round(math.log10(self.scale)))
+
+
+SOUND_SETTINGS = (
+    SoundSetting(
+        "threshold", COL_THRESHOLD, "Threshold",
+        "How similar a sound must be to a clip to count (0 to 1)",
+        minimum=0.01, maximum=1.0, decimals=2, step=0.01,
+    ),
+    SoundSetting(
+        "min_level_db", COL_MIN_LEVEL, "Min dBFS",
+        "Quieter sounds are not matched (e.g. the same sound far away)",
+        minimum=-120.0, maximum=0.0, decimals=1, step=1.0,
+    ),
+    SoundSetting(
+        "pitch_tolerance", COL_PITCH, "Pitch ±",
+        "Also match the clips played up to this much higher or lower "
+        "(for sounds an application varies, e.g. 6 %)",
+        minimum=0.0, maximum=20.0, decimals=1, step=1.0, scale=100.0, suffix=" %", zero="off",
+    ),
+    SoundSetting(
+        "template_length", COL_LENGTH, "Length",
+        "Match only the first seconds of each clip: shorter reacts sooner",
+        minimum=0.0, maximum=10.0, decimals=2, step=0.05, suffix=" s", zero="whole",
+    ),
+)  # fmt: skip
 DEFAULT_SIZE = QSize(1150, 760)
 
 # status line: background and text colour per phase (readable on light and dark themes)
@@ -103,6 +168,11 @@ def playing_apps() -> list[AppStream]:
         return list_apps()
     except Exception:
         return []
+
+
+def key_help() -> str:
+    """The tooltip of the action fields: how to write steps, and every key name there is."""
+    return keys.help_text(linux_note=sys.platform != "win32")
 
 
 def open_in_file_manager(folder: Path) -> None:
@@ -139,7 +209,7 @@ def status_text(s: Status | None) -> str:
         return f"Stopped: {s.detail}"
     else:
         text = s.phase
-    return f"{text} · without keys" if s.dry_run else text
+    return f"{text} · listening only" if s.dry_run else text
 
 
 def _put(spin: QSpinBox | QDoubleSpinBox, value: float | None) -> None:
@@ -157,6 +227,28 @@ def _get(spin: QSpinBox | QDoubleSpinBox) -> float | None:
 
 def _unchanged(spin: QSpinBox | QDoubleSpinBox) -> bool:
     return spin.value() == spin.property("shown")
+
+
+class _SoundChoice(QStyledItemDelegate):
+    """Edits a rule's sound with a list of the known sounds; a new name can still be typed."""
+
+    def __init__(self, names: Callable[[], list[str]], parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._names = names
+
+    def createEditor(self, parent: QWidget, option: QStyleOptionViewItem, index) -> QWidget:
+        box = QComboBox(parent)
+        box.setEditable(True)
+        box.addItems(self._names())
+        return box
+
+    def setEditorData(self, editor: QWidget, index) -> None:
+        assert isinstance(editor, QComboBox)
+        editor.setCurrentText(str(index.data() or ""))
+
+    def setModelData(self, editor: QWidget, model, index) -> None:
+        assert isinstance(editor, QComboBox)
+        model.setData(index, editor.currentText().strip())
 
 
 class _Bridge(QObject):
@@ -321,18 +413,29 @@ class MainWindow(QMainWindow):
         *,
         library: Library | None = None,
         list_apps: Callable[[], list[AppStream]] = playing_apps,
-        list_windows: Callable[[], list[str]] = x11.window_titles,
+        list_windows: Callable[[], list[str]] | None = None,
+        window_problems: Callable[[str], list[str]] | None = None,
         settings: QSettings | None = None,
         open_folder: Callable[[Path], object] = open_in_file_manager,
         ask_unsaved: Callable[[str], Answer] | None = None,
     ) -> None:
         super().__init__()
         self.library = library or Library()
+        if list_windows is None or window_problems is None:
+            backend = desktop.current()  # X11 on Linux, Win32 on Windows
+            list_windows = list_windows or backend.window_titles
+            window_problems = window_problems or backend.window_problems
         self.list_apps = list_apps
         self.list_windows = list_windows
-        self.settings = settings or QSettings("sound-reactor", "gui")
+        self.window_problems = window_problems
+        self.settings = settings or QSettings(
+            str(paths.gui_settings_file()), QSettings.Format.IniFormat
+        )
         self.open_folder = open_folder
         self.ask_unsaved = ask_unsaved or self._ask_unsaved_dialog
+        # dialogs for new sounds and clips (tests replace them)
+        self.ask_sound_name: Callable[[], str | None] = self._ask_sound_name_dialog
+        self.ask_wavs: Callable[[str], list[Path]] = self._ask_wavs_dialog
         self.path: Path | None = None
         self.run: Run | None = None
         self.last_result: Result | None = None
@@ -419,7 +522,7 @@ class MainWindow(QMainWindow):
             action.triggered.connect(slot)
             self.actions_by_name[name] = action
         self.actions_by_name["replay"].setToolTip(
-            "Use a WAV recording as the source and try the profile on it without keys"
+            "Use a WAV recording as the source and replay it with Listen only"
         )
 
     def _profile_bar(self) -> QHBoxLayout:
@@ -446,7 +549,7 @@ class MainWindow(QMainWindow):
         source_edit.editingFinished.connect(self._source_picked)
         self.target = QComboBox()
         self.target.setEditable(True)
-        self.target.setToolTip("Title of the X11 window that receives the keys")
+        self.target.setToolTip("Title of the window that receives the keys")
         self.target.editTextChanged.connect(self._changed)
         self.target.activated.connect(self._target_chosen)
         line_edit = self.target.lineEdit()
@@ -467,31 +570,48 @@ class MainWindow(QMainWindow):
     def _sounds_box(self) -> QGroupBox:
         box = QGroupBox("Sounds")
         layout = QVBoxLayout(box)
-        self.sounds = QTableWidget(0, 4)
-        self.sounds.setHorizontalHeaderLabels(["Sound", "Clips", "Threshold", "Min level (dBFS)"])
-        self.sounds.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.sounds = QTableWidget(0, 2 + len(SOUND_SETTINGS))
+        self.sounds.setHorizontalHeaderLabels(
+            ["Sound", "Clips", *(s.header for s in SOUND_SETTINGS)]
+        )
+        header = self.sounds.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(COL_CLIPS, QHeaderView.ResizeMode.ResizeToContents)
+        for s in SOUND_SETTINGS:
+            item = self.sounds.horizontalHeaderItem(s.column)
+            if item is not None:
+                item.setToolTip(s.tip)
         self.sounds.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.sounds.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.sounds.verticalHeader().setVisible(False)
         self.sounds.setMinimumHeight(90)
         self.sounds.setToolTip(
-            "Sounds are events of the detector library. Threshold and min level changed here "
-            "are saved in this profile; otherwise the library's values apply."
+            "Sounds are events of the detector library. Settings changed here are saved in this "
+            "profile; otherwise the library's values apply."
         )
         layout.addWidget(self.sounds)
-        self.new_sound = QComboBox()
-        self.new_sound.setEditable(True)
-        _compact(self.new_sound, 8)
-        self.new_sound.setToolTip("A sound from the detector library, or a new name")
+        self.library_sounds = QComboBox()
+        _compact(self.library_sounds, 10)
+        self.library_sounds.setPlaceholderText("library sound")
+        self.library_sounds.setToolTip(
+            "Sounds in the detector library that this profile does not use"
+        )
         layout.addLayout(
             _row(
-                self.new_sound,
-                _button("Add", lambda: self.add_sound(self.new_sound.currentText())),
-                _button("Remove", self.remove_sound),
+                self.library_sounds,
+                _button("Use", self._use_chosen_sound, "Listen for this library sound too"),
+                _button("Remove", self.remove_sound, "Stop listening for the selected sound"),
                 _button(
-                    "Add clip from WAV…",
-                    self._clip_dialog,
-                    "Cut the sound out of a WAV file and add it to the library as a clip",
+                    "New sound…",
+                    self.new_sound_dialog,
+                    "Name a new sound and pick WAV recordings of it: each one is cut to the "
+                    "sound and stored in the library as a clip",
+                ),
+                _button(
+                    "Add clips…",
+                    self.add_clips_dialog,
+                    "Add more WAV recordings of the selected sound as clips (more variants, "
+                    "surer recognition)",
                 ),
             )
         )
@@ -499,9 +619,11 @@ class MainWindow(QMainWindow):
 
     def _rules_box(self) -> QGroupBox:
         box = QGroupBox("Rules (steps: a key such as 9 or f, or wait SECONDS)")
+        box.setToolTip(key_help())
         form = QFormLayout(box)
         self.on_start = QLineEdit()
         self.on_start.setPlaceholderText("e.g. 9")
+        self.on_start.setToolTip(key_help())
         self.on_start.textChanged.connect(self._changed)
         form.addRow("On start", self.on_start)
         self.rules = QTableWidget(0, 2)
@@ -509,12 +631,18 @@ class MainWindow(QMainWindow):
         self.rules.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.rules.verticalHeader().setVisible(False)
         self.rules.setMinimumHeight(80)
+        self.rules.setToolTip(f"Double-click a cell to change it.\n\n{key_help()}")
+        actions_header = self.rules.horizontalHeaderItem(1)
+        if actions_header is not None:
+            actions_header.setToolTip(key_help())
+        self._sound_choice = _SoundChoice(self.sound_choices, self.rules)
+        self.rules.setItemDelegateForColumn(0, self._sound_choice)
         self.rules.itemChanged.connect(self._changed)
         form.addRow("On sound", self.rules)
         form.addRow(
             "",
             _row(
-                _button("Add rule", lambda: self._add_rule("", "")),
+                _button("Add rule", self._new_rule),
                 _button("Remove rule", self._remove_rule),
             ),
         )
@@ -525,6 +653,7 @@ class MainWindow(QMainWindow):
         self.silence_seconds.valueChanged.connect(self._changed)
         self.on_silence = QLineEdit()
         self.on_silence.setPlaceholderText("e.g. 9")
+        self.on_silence.setToolTip(key_help())
         self.on_silence.textChanged.connect(self._changed)
         silence = _row(self.silence_on, self.silence_seconds, "with no sound:", stretch=False)
         silence.addWidget(self.on_silence, 1)
@@ -592,9 +721,12 @@ class MainWindow(QMainWindow):
             "that window loses focus",
         )
         self.try_button = _button(
-            "Try without keys",
+            "Listen only",
             lambda: self.start_run(live=False),
-            "Run everything but the keys (logged instead); no focus needed",
+            "Runs everything except the keys: listens, recognises the sounds, follows the rules "
+            "and counts, but only writes the keys to the log.\nStarts at once and does not need "
+            "the window in focus. Use it to check recognition while you do the action by hand, "
+            "or to replay a recording.",
         )
         self.stop_button = _button("Stop", self.stop_run)
         self.stop_button.setEnabled(False)
@@ -602,7 +734,7 @@ class MainWindow(QMainWindow):
             b.setMinimumHeight(34)
         panel.addLayout(_row(self.start_button, self.try_button, self.stop_button))
         self.problems_label = QLabel()  # what blocks both buttons, or "Ready to start."
-        self.start_only_label = QLabel()  # what blocks only Start: Try without keys still works
+        self.start_only_label = QLabel()  # what blocks only Start: Listen only still works
         for label in (self.problems_label, self.start_only_label):
             label.setWordWrap(True)
             label.setTextFormat(Qt.TextFormat.PlainText)
@@ -686,6 +818,7 @@ class MainWindow(QMainWindow):
             _put(self.max_cycles, p.stop.max_cycles)
             _put(self.ignore_after, p.ignore_after_action)
             _put(self.start_delay, p.start_delay)
+            self.refresh_sound_choices()
         finally:
             self._loading = False
         self._saved = self._try_profile()
@@ -699,14 +832,14 @@ class MainWindow(QMainWindow):
             name = self._sound_name(row)
             overrides = dict(self._hidden_overrides.get(name, {}))
             stored = self.library.settings(name)
-            for key, col in (("threshold", COL_THRESHOLD), ("min_level_db", COL_MIN_LEVEL)):
-                spin = self.sounds.cellWidget(row, col)
+            for s in SOUND_SETTINGS:
+                spin = self.sounds.cellWidget(row, s.column)
                 assert isinstance(spin, QDoubleSpinBox)
                 if _unchanged(spin):
                     if spin.property("override"):  # keep the profile's own value exactly
-                        overrides[key] = spin.property("exact")
-                elif round(spin.value(), spin.decimals()) != round(stored[key], spin.decimals()):
-                    overrides[key] = spin.value()
+                        overrides[s.key] = spin.property("setting")
+                elif round(spin.value(), s.decimals) != round(stored[s.key] * s.scale, s.decimals):
+                    overrides[s.key] = s.stored(spin.value())
             sounds[name] = overrides
         rules = []
         for row in range(self.rules.rowCount()):
@@ -760,8 +893,42 @@ class MainWindow(QMainWindow):
         row = self.rules.rowCount()
         self.rules.insertRow(row)
         self.rules.setItem(row, 0, QTableWidgetItem(sound))
-        self.rules.setItem(row, 1, QTableWidgetItem(actions))
+        steps = QTableWidgetItem(actions)
+        steps.setToolTip(key_help())
+        self.rules.setItem(row, 1, steps)
         self._changed()
+
+    def _new_rule(self) -> None:
+        """Add a rule for the selected (or first) sound and start typing its actions."""
+        selected = self.sounds.currentRow()
+        row = selected if selected >= 0 else 0
+        sound = self._sound_name(row) if self.sounds.rowCount() else ""
+        self._add_rule(sound, "")
+        new = self.rules.rowCount() - 1
+        self.rules.setCurrentCell(new, 1)
+        item = self.rules.item(new, 1)
+        if item is not None:
+            self.rules.editItem(item)
+
+    def sound_choices(self) -> list[str]:
+        """Sounds a rule can use: the profile's first, then the rest of the library."""
+        names = [self._sound_name(r) for r in range(self.sounds.rowCount())]
+        return names + [n for n in self.library.names() if n not in names]
+
+    def refresh_sound_choices(self) -> None:
+        """Offer the library's sounds that are not in the table yet, next to Use."""
+        in_table = {self._sound_name(r) for r in range(self.sounds.rowCount())}
+        self.library_sounds.clear()
+        self.library_sounds.addItems([n for n in self.library.names() if n not in in_table])
+        self.library_sounds.setCurrentIndex(-1)
+
+    def _use_chosen_sound(self) -> None:
+        name = self.library_sounds.currentText()
+        if not name:
+            self.statusBar().showMessage("Choose a library sound first", 4000)
+            return
+        if self.add_sound(name):
+            self.refresh_sound_choices()
 
     def _remove_rule(self) -> None:
         row = self.rules.currentRow()
@@ -789,7 +956,7 @@ class MainWindow(QMainWindow):
             self._build_meter()
 
     def problems(self) -> tuple[list[str], list[str]]:
-        """What blocks Start, and what blocks Try without keys (from the lists last fetched)."""
+        """What blocks Start, and what blocks Listen only (from the lists last fetched)."""
         try:
             p = self.profile()
         except (ProfileError, ValueError) as e:
@@ -807,13 +974,22 @@ class MainWindow(QMainWindow):
             message = f"nothing called {app!r} is playing audio now (↻ to look again)"
             live.append(message)
             dry.append(message)
-        if p.target and replay_path(p.source) is None and p.target not in self._windows:
-            live.append(f"no window titled {p.target!r} is open (↻ to look again)")
+        if p.target and replay_path(p.source) is None:
+            if p.target not in self._windows:
+                live.append(f"no window titled {p.target!r} is open (↻ to look again)")
+            else:  # e.g. Windows: the game runs as administrator, sound-reactor does not
+                try:
+                    live += self.window_problems(p.target)
+                except Exception as e:  # EnumWindows, OpenProcess...: a line, not a traceback
+                    live.append(
+                        f"cannot check whether keys would reach {p.target!r}: "
+                        f"{type(e).__name__}: {e}"
+                    )
         return live, dry
 
     def show_problems(self) -> None:
         """Red: what blocks both buttons (or the last start that failed). Grey: what blocks
-        only Start, while Try without keys would work."""
+        only Start, while Listen only would work."""
         live, dry = self.problems()
         blocking = self._start_errors + dry
         start_only = [m for m in live if m not in dry]
@@ -821,9 +997,7 @@ class MainWindow(QMainWindow):
             self.problems_label.setText("\n".join(f"• {m}" for m in blocking))
             self.problems_label.setStyleSheet("color: #b3261e;")
         else:
-            self.problems_label.setText(
-                "Ready to try without keys." if start_only else "Ready to start."
-            )
+            self.problems_label.setText("Ready to listen." if start_only else "Ready to start.")
             self.problems_label.setStyleSheet("color: #2e7d32;")
         self.start_only_label.setText("Start only: " + "; ".join(start_only) if start_only else "")
         self.start_only_label.setVisible(bool(start_only))
@@ -1030,7 +1204,7 @@ class MainWindow(QMainWindow):
         name, _ = QFileDialog.getOpenFileName(self, "Replay a recording", "", "WAV files (*.wav)")
         if name:
             self.source.setCurrentText(f"file:{name}")
-            self.statusBar().showMessage("A recording can be tried without keys only", 5000)
+            self.statusBar().showMessage("A recording can only be replayed with Listen only", 5000)
 
     # -- sounds --------------------------------------------------------------------------------
 
@@ -1047,21 +1221,20 @@ class MainWindow(QMainWindow):
         self.sounds.insertRow(row)
         self.sounds.setItem(row, COL_NAME, QTableWidgetItem(name))
         self.sounds.setItem(row, COL_CLIPS, QTableWidgetItem())
-        threshold = QDoubleSpinBox()
-        threshold.setRange(0.01, 1.0)
-        threshold.setDecimals(2)
-        threshold.setSingleStep(0.01)
-        min_level = QDoubleSpinBox()
-        min_level.setRange(-120.0, 0.0)
-        min_level.setDecimals(1)
-        for key, spin in (("threshold", threshold), ("min_level_db", min_level)):
-            _put(spin, overrides.get(key, stored[key]))
-            spin.setProperty("override", key in overrides)
-            spin.setToolTip(f"Library value {stored[key]:g}; a change is saved in this profile")
+        for s in SOUND_SETTINGS:
+            spin = s.spin()
+            value = overrides.get(s.key, stored[s.key])
+            _put(spin, value * s.scale)
+            spin.setProperty("setting", value)  # exact, without the scale's float noise
+            spin.setProperty("override", s.key in overrides)
+            library = stored[s.key] * s.scale
+            spin.setToolTip(
+                f"{s.tip}.\nLibrary value {library:g}{s.suffix}; a change is saved in this profile"
+            )
             spin.valueChanged.connect(self._changed)
-        self.sounds.setCellWidget(row, COL_THRESHOLD, threshold)
-        self.sounds.setCellWidget(row, COL_MIN_LEVEL, min_level)
-        hidden = {k: v for k, v in overrides.items() if k not in ("threshold", "min_level_db")}
+            self.sounds.setCellWidget(row, s.column, spin)
+        shown = {s.key for s in SOUND_SETTINGS}
+        hidden = {k: v for k, v in overrides.items() if k not in shown}
         if hidden:
             self._hidden_overrides[name] = hidden
         self._update_clips(row)
@@ -1073,10 +1246,11 @@ class MainWindow(QMainWindow):
         try:
             text = str(len(self.library.info(name).clips))
         except KeyError:
-            text = "0 (none in the library)"
+            text = "0"
         item = self.sounds.item(row, COL_CLIPS)
         if item is not None:
             item.setText(text)
+            item.setToolTip("" if text != "0" else "No clips yet: use “Add clips…”")
 
     def _selected_sound(self) -> tuple[int, str] | None:
         row = self.sounds.currentRow()
@@ -1092,6 +1266,7 @@ class MainWindow(QMainWindow):
         if selected is not None:
             self._hidden_overrides.pop(selected[1], None)
             self.sounds.removeRow(selected[0])
+            self.refresh_sound_choices()
             self._changed()
 
     def add_clip_from(self, wav: Path, name: str) -> Path | None:
@@ -1111,24 +1286,57 @@ class MainWindow(QMainWindow):
             self.add_sound(name)
         for row in range(self.sounds.rowCount()):
             self._update_clips(row)
+        self.refresh_sound_choices()
         self._changed()
         return path
 
-    def _clip_dialog(self) -> None:
+    def add_clips(self, name: str, wavs: list[Path]) -> int:
+        """Add each WAV as a clip of ``name``; the number added."""
+        return sum(self.add_clip_from(wav, name) is not None for wav in wavs)
+
+    def new_sound_dialog(self) -> bool:
+        """Ask for a new sound's name and its recordings; the sound is created with them."""
+        name = self.ask_sound_name()
+        if name is None:
+            return False
+        name = name.strip()
+        if not profiles.NAME_RE.match(name):
+            self.append_log(
+                f"error: invalid sound name {name!r}: letters, digits, '.', '_' and '-' only"
+            )
+            return False
+        if name in self.library.names():
+            self.append_log(
+                f"error: the library already has a sound {name!r}: choose it and click Use, "
+                "then Add clips… for more recordings"
+            )
+            return False
+        wavs = self.ask_wavs(f"Recordings of the new sound {name!r}")
+        if not wavs:
+            return False
+        return self.add_clips(name, wavs) > 0
+
+    def add_clips_dialog(self) -> bool:
+        """More recordings for the sound selected in the table (or its only sound)."""
         selected = self._selected_sound()
-        name = selected[1] if selected else self.new_sound.currentText().strip()
-        if not name:
-            return
-        wav, _ = QFileDialog.getOpenFileName(
-            self, f"Add a clip to {name!r}", "", "WAV files (*.wav)"
-        )
-        if wav:
-            self.add_clip_from(Path(wav), name)
+        if selected is None:
+            return False
+        name = selected[1]
+        wavs = self.ask_wavs(f"More recordings of {name!r}")
+        return bool(wavs) and self.add_clips(name, wavs) > 0
+
+    def _ask_sound_name_dialog(self) -> str | None:
+        name, ok = QInputDialog.getText(self, "New sound", "Name of the new sound (e.g. splash):")
+        return name if ok else None
+
+    def _ask_wavs_dialog(self, title: str) -> list[Path]:
+        names, _ = QFileDialog.getOpenFileNames(self, title, "", "WAV files (*.wav)")
+        return [Path(n) for n in names]
 
     # -- running -------------------------------------------------------------------------------
 
     def start_run(self, *, live: bool) -> bool:
-        """Start (live: keys are sent) or Try without keys (``live=False``)."""
+        """Start (live: keys are sent) or Listen only (``live=False``)."""
         if self.run is not None and self.run.engine.running:
             return False
         self.refresh_sources()
@@ -1269,7 +1477,7 @@ class MainWindow(QMainWindow):
         triggered = sum(c.triggers.values())
         per_sound = ", ".join(f"{k} {n}" for k, n in c.triggers.items())
         rate = f", hit rate {100.0 * triggered / c.cycles:.0f} %" if c.cycles else ""
-        how = " (tried without keys)" if self.run is not None and self.run.engine.dry_run else ""
+        how = " (listening only)" if self.run is not None and self.run.engine.dry_run else ""
         self.summary.setText(
             f"{'Stopped with a problem' if result.error else 'Stopped'}: {result.reason}{how}.\n"
             f"{c.cycles} cycles, {triggered} triggers"
@@ -1300,8 +1508,20 @@ class MainWindow(QMainWindow):
 
 
 def main(profile: str | None = None) -> int:
+    from .win32 import on_console_close  # does nothing outside Windows
+
     app = QApplication.instance() or QApplication(sys.argv[:1])
     window = MainWindow()
     window.load_initial(profile)
     window.show()
-    return app.exec()
+
+    def stop(reason: str) -> None:  # from the console handler's thread
+        if window.run is not None:
+            window.run.stop(reason)
+
+    def wait(seconds: float) -> None:
+        if window.run is not None:
+            window.run.engine.join(seconds)
+
+    with on_console_close(stop, wait):  # closing the console window that started the GUI
+        return app.exec()

@@ -1,9 +1,10 @@
 """Profiles: what to listen to, which window gets the keys, and which actions answer which sound.
 
-A profile is a TOML file, by default in ``~/.config/sound-reactor/profiles/<name>.toml``::
+A profile is a TOML file, by default in ``~/.config/sound-reactor/profiles/<name>.toml``
+(``%APPDATA%\\sound-reactor\\profiles`` on Windows, see :mod:`.paths`)::
 
     source = "app:World of Warcraft"     # detector source: app:NAME, device:TEXT, file:PATH.wav
-    target = "World of Warcraft"         # X11 window title that receives keys
+    target = "World of Warcraft"         # title of the window that receives keys
 
     [sounds.bite]                         # detector event from the library; optional overrides
     min_level_db = -40
@@ -41,12 +42,24 @@ from typing import Any
 
 from sound_event_detector.library import SETTINGS as SOUND_SETTINGS
 
+from . import paths
+
 DEFAULT_IGNORE_AFTER_ACTION = 1.5  # s: sounds starting this soon after a key are ignored
 DEFAULT_START_DELAY = 5.0  # s between switching into the target window and the first action
 DEFAULT_SILENCE = 30.0  # s
 
 # Allowed ranges of the sound settings (low, high, low inclusive); the rest must be >= 0.
-SETTING_RANGES = {"threshold": (0.0, 1.0, False), "min_level_db": (-math.inf, 0.0, True)}
+SETTING_RANGES = {
+    "threshold": (0.0, 1.0, False),
+    "min_level_db": (-math.inf, 0.0, True),
+    "pitch_tolerance": (0.0, 0.5, True),
+    "template_length": (0.0, 10.0, True),
+}
+# What a value means, added to range errors.
+SETTING_UNITS = {
+    "pitch_tolerance": "a fraction of the speed: 0.06 is +/-6 %",
+    "template_length": "seconds of each clip; 0 = the whole clip",
+}
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")  # as the detector library's event names
 BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")  # TOML keys that need no quotes
@@ -58,7 +71,7 @@ class ProfileError(ValueError):
 
 @dataclass(frozen=True)
 class Key:
-    """Press and release one key (an X keysym name such as ``9``, ``f``, ``F1``, ``space``)."""
+    """Press and release one key (``9``, ``f``, ``F1``, ``space``; see :mod:`.keys`)."""
 
     key: str
 
@@ -146,9 +159,13 @@ def _number(value: object, where: str, *, minimum: float = 0.0, strict: bool = F
 
 def _setting(key: str, value: object, where: str) -> float:
     low, high, low_ok = SETTING_RANGES.get(key, (0.0, math.inf, True))
-    number = _number(value, where, minimum=low, strict=not low_ok)
+    unit = f" ({SETTING_UNITS[key]})" if key in SETTING_UNITS else ""
+    try:
+        number = _number(value, where, minimum=low, strict=not low_ok)
+    except ProfileError as e:
+        raise ProfileError(f"{e}{unit}") from None
     if number > high:
-        raise ProfileError(f"{where} must be <= {high:g}")
+        raise ProfileError(f"{where} must be <= {high:g}{unit}")
     return number
 
 
@@ -384,12 +401,11 @@ def parse_actions(text: str) -> list[Action]:
 
 
 def config_home() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
-    return Path(base) / "sound-reactor"
+    return paths.config_home()
 
 
 def profiles_dir() -> Path:
-    return config_home() / "profiles"
+    return paths.profiles_dir()
 
 
 def list_profiles() -> list[str]:
@@ -400,6 +416,7 @@ def list_profiles() -> list[str]:
 def resolve(name_or_path: str) -> Path:
     """A profile file from a name in :func:`profiles_dir` or a path."""
     path = Path(name_or_path).expanduser()
-    if path.suffix == ".toml" or path.is_file() or "/" in name_or_path:
+    separators = {os.sep, os.altsep} - {None}  # "/" on Linux; "\\" and "/" on Windows
+    if path.suffix == ".toml" or path.is_file() or any(s in name_or_path for s in separators):
         return path
     return profiles_dir() / f"{name_or_path}.toml"

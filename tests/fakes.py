@@ -151,6 +151,7 @@ class FakeTarget:
     """Stands in for :class:`sound_reactor.x11.Target`: focus, held input, keys, keymap."""
 
     def __init__(self, clock: FakeClock | None = None, *, focus=lambda t: True, bad_keys=()):
+        self.title = "Game"
         self.clock = clock or FakeClock()
         self.focus = focus
         self.bad_keys = set(bad_keys)
@@ -163,6 +164,9 @@ class FakeTarget:
         if key in self.bad_keys:
             raise ValueError(f"key {key!r} needs a modifier on this layout")
         return 10
+
+    def describe_key(self, key: str) -> str:
+        return f"keycode {self.keycode(key)}"
 
     def focused(self) -> bool:
         return self.focus(self.clock.t)

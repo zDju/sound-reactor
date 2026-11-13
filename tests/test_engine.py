@@ -8,7 +8,7 @@ import pytest
 
 from fakes import FakeClock, FakeInhibitor, FakeKeyboard, FakeListener, ForbiddenKeyboard
 from sound_reactor import profile as profiles
-from sound_reactor.engine import Engine, Result
+from sound_reactor.engine import Engine, KeyNotSent, Result
 
 EXAMPLE = Path(__file__).parent.parent / "examples" / "wow-fishing.toml"
 
@@ -145,6 +145,23 @@ def test_held_key_stops_before_sending():
     result, kb, *_ = run(fishing(), [(15.0, "bite", 0.9)], held=held)
     assert keys(kb) == [(7.0, "9")]  # Interact was not sent
     assert "key(s) w held" in result.reason and result.error
+
+
+def test_a_keyboard_that_does_not_send_stops_the_run_like_focus_loss():
+    def refuse_the_recast(engine, clock):
+        press = engine.keyboard.press
+
+        def press_or_refuse(key: str) -> None:
+            if clock.t > 10:
+                raise KeyNotSent("the target window lost focus right before the key")
+            press(key)
+
+        engine.keyboard.press = press_or_refuse
+
+    result, kb, *_ = run(fishing(), [(15.0, "bite", 0.9)], setup=refuse_the_recast)
+    assert keys(kb) == [(7.0, "9")]
+    assert result.reason == "the target window lost focus right before the key (key 'f' not sent)"
+    assert not result.error and result.counters.keys == 1
 
 
 def test_dry_run_needs_no_focus_and_sends_nothing():

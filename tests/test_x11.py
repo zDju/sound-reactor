@@ -1,8 +1,8 @@
-"""Only the parts that need no X server: key names and held-input descriptions."""
+"""Only the parts that need no X server: key names and held-input descriptions (Linux)."""
 
 import pytest
 
-from sound_reactor import x11
+x11 = pytest.importorskip("sound_reactor.x11", reason="X11 (python-xlib) is Linux only")
 
 
 def test_key_names():

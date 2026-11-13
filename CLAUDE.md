@@ -13,5 +13,13 @@ what was measured about the game, the display, input options and bite detection,
 - Repository: github.com/zDju/sound-reactor (branch `main`). Commit as `zdju <zdju@rocketmail.com>`
   (set locally in the repo; the global email is the work address), only with the user's approval,
   and without any Co-Authored-By or other tool trailer.
-- The detector is a path dependency (`../sound-event-detector`); a fresh clone needs it next to
-  this folder until it becomes a git dependency.
+- The detector dependency is a GitHub archive at a pinned commit
+  (`.../sound-event-detector/archive/<commit>.zip`: installs need no Git); bump the commit in
+  `pyproject.toml` (and `uv lock`) after a detector commit that sound-reactor needs.
+  `[tool.uv.sources]` replaces it with the editable `../sound-event-detector` for development, so
+  `uv sync` in a clone needs that folder next to this one. Installs
+  (`uv tool install --no-sources https://github.com/zDju/sound-reactor/archive/refs/heads/main.zip
+  --with-executables-from sound-event-detector`) and CI (`uv sync --no-sources`) take the pinned
+  archive; without `--no-sources` uv looks for the path.
+- Windows (`win32.py`) is unverified on real hardware; testers follow `docs/windows-testing.md`.
+  Tests use the simulated Windows in `tests/winfakes.py` and never call the real SendInput.

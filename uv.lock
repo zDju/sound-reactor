@@ -418,10 +418,10 @@ name = "sound-reactor"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "jeepney" },
+    { name = "jeepney", marker = "sys_platform == 'linux'" },
     { name = "numpy" },
     { name = "pyside6-essentials" },
-    { name = "python-xlib" },
+    { name = "python-xlib", marker = "sys_platform == 'linux'" },
     { name = "sound-event-detector" },
 ]
 
@@ -436,10 +436,10 @@ spikes = [
 
 [package.metadata]
 requires-dist = [
-    { name = "jeepney", specifier = ">=0.9.0" },
+    { name = "jeepney", marker = "sys_platform == 'linux'", specifier = ">=0.9.0" },
     { name = "numpy", specifier = ">=2.5.4" },
     { name = "pyside6-essentials", specifier = ">=6.12.0" },
-    { name = "python-xlib", specifier = ">=0.33" },
+    { name = "python-xlib", marker = "sys_platform == 'linux'", specifier = ">=0.33" },
     { name = "sound-event-detector", editable = "../sound-event-detector" },
 ]
 

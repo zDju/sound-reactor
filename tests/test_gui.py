@@ -7,6 +7,7 @@ writes to the user's configuration or opens anything.
 from __future__ import annotations
 
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from sound_event_detector.capture import AppStream
 
 from fakes import RATE, FakeClock, FakeKeyboard, FakeListener, chirp, make_replay
 from sound_reactor import gui as gui_module
+from sound_reactor import keys, paths
 from sound_reactor import profile as profiles
 from sound_reactor.engine import ARMED, REACTING, STARTING, STOPPED, WAITING, Engine, Status
 from sound_reactor.profile import Key, Profile, SilenceRule, SoundRule, StopRules, Wait
@@ -25,9 +27,17 @@ from sound_reactor.runner import Run, RunError
 pytest.importorskip("PySide6")
 from PySide6.QtCore import QEventLoop, QSettings, QSize
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QApplication, QDoubleSpinBox, QPushButton
+from PySide6.QtWidgets import QApplication, QDoubleSpinBox, QGroupBox, QPushButton
 
-from sound_reactor.gui import COL_THRESHOLD, COLOURS, MainWindow, MeterBar, status_text
+from sound_reactor.gui import (
+    COL_LENGTH,
+    COL_PITCH,
+    COL_THRESHOLD,
+    COLOURS,
+    MainWindow,
+    MeterBar,
+    status_text,
+)
 
 EXAMPLE = Path(__file__).parent.parent / "examples" / "wow-fishing.toml"
 APPS = [  # what PipeWire lists: application name and binary
@@ -55,6 +65,7 @@ def make_window(app, tmp_path):
             "library": Library(tmp_path / "library"),
             "list_apps": lambda: list(APPS),
             "list_windows": lambda: list(WINDOWS),
+            "window_problems": lambda title: [],
             "settings": QSettings(str(tmp_path / "gui.ini"), QSettings.Format.IniFormat),
             "open_folder": opened.append,
             "ask_unsaved": lambda name: pytest.fail(f"unexpected question about {name}"),
@@ -96,7 +107,7 @@ def test_example_profile_round_trips_through_the_window(window):
     assert window.load_path(EXAMPLE)
     assert window.profile() == profiles.load(EXAMPLE)
     assert not window.dirty and window.windowTitle() == "wow-fishing — sound-reactor"
-    assert window.sounds.item(0, 1).text() == "0 (none in the library)"
+    assert window.sounds.item(0, 1).text() == "0"
     assert window.path_label.text() == str(EXAMPLE)
 
 
@@ -105,7 +116,13 @@ def test_values_survive_the_window_unchanged(window):
         source="app:World of Warcraft",
         target="World of Warcraft",
         sounds={
-            "bite": {"threshold": 0.835, "min_level_db": -40.25, "cooldown": 1.5},
+            "bite": {
+                "threshold": 0.835,
+                "min_level_db": -40.25,
+                "pitch_tolerance": 0.065,
+                "template_length": 0.333,
+                "cooldown": 1.5,
+            },
             "door": {"threshold": 0.75},  # equal to the library's value, still kept
         },
         on_start=[Key("9")],
@@ -133,6 +150,118 @@ def test_threshold_edits_go_into_the_profile_not_the_library(window):
     texts = [b.text() for b in window.findChildren(QPushButton)]
     assert "Save to library" not in texts
     window.set_profile(Profile())  # drop the change
+
+
+def test_pitch_and_length_are_edited_per_sound(window):
+    window.library.add("chirp", chirp(), RATE)
+    window.library.update_settings("chirp", {"pitch_tolerance": 0.06, "template_length": 0.3})
+    window.add_sound("chirp")
+    pitch = window.sounds.cellWidget(0, COL_PITCH)
+    length = window.sounds.cellWidget(0, COL_LENGTH)
+    assert isinstance(pitch, QDoubleSpinBox) and isinstance(length, QDoubleSpinBox)
+    assert pitch.value() == 6.0 and pitch.suffix() == " %"  # shown in percent
+    assert length.value() == 0.3
+    assert window.profile().sounds == {"chirp": {}}  # the library's values: no overrides
+    pitch.setValue(4.0)
+    length.setValue(0.5)
+    assert window.profile().sounds == {"chirp": {"pitch_tolerance": 0.04, "template_length": 0.5}}
+    pitch.setValue(0.0)
+    assert pitch.text() == "off"
+    assert window.profile().sounds["chirp"]["pitch_tolerance"] == 0.0
+    window.set_profile(Profile())
+
+
+def test_use_offers_the_library_sounds(window):
+    assert window.library_sounds.count() == 0
+    window.library.add("chirp", chirp(), RATE)
+    window.library.add("door", chirp(), RATE)
+    window.refresh_sound_choices()
+    choices = [window.library_sounds.itemText(i) for i in range(window.library_sounds.count())]
+    assert choices == ["chirp", "door"]
+    assert window.library_sounds.currentIndex() == -1  # nothing chosen for the user
+    window._use_chosen_sound()  # nothing chosen: nothing added
+    assert window.sounds.rowCount() == 0
+    window.library_sounds.setCurrentIndex(0)
+    window._use_chosen_sound()
+    assert window._sound_name(0) == "chirp"
+    choices = [window.library_sounds.itemText(i) for i in range(window.library_sounds.count())]
+    assert choices == ["door"]  # already used sounds are not offered again
+    window.set_profile(Profile())
+
+
+def take(tmp_path: Path, name: str) -> Path:
+    """A WAV recording with one chirp in silence."""
+    wav = tmp_path / name
+    padded = np.concatenate([np.zeros(RATE // 2), chirp(), np.zeros(RATE // 2)])
+    save_wav(wav, padded.astype(np.float32), RATE)
+    return wav
+
+
+def test_new_sound_is_made_from_several_recordings(window, tmp_path):
+    wavs = [take(tmp_path, "a.wav"), take(tmp_path, "b.wav")]
+    asked: list[str] = []
+    window.ask_sound_name = lambda: "splash"
+    window.ask_wavs = lambda title: asked.append(title) or wavs
+    assert window.new_sound_dialog()
+    assert asked == ["Recordings of the new sound 'splash'"]
+    assert window.library.names() == ["splash"]
+    assert len(window.library.info("splash").clips) == 2
+    assert window._sound_name(0) == "splash" and window.sounds.item(0, 1).text() == "2"
+    window.set_profile(Profile())
+
+
+def test_new_sound_refuses_bad_or_taken_names_and_cancel(window, tmp_path):
+    window.library.add("chirp", chirp(), RATE)
+    window.ask_wavs = lambda title: pytest.fail("no files should be asked for")
+    window.ask_sound_name = lambda: None  # cancelled
+    assert not window.new_sound_dialog()
+    window.ask_sound_name = lambda: "two words"
+    assert not window.new_sound_dialog()
+    window.ask_sound_name = lambda: "chirp"
+    assert not window.new_sound_dialog()
+    log = window.log.toPlainText()
+    assert "invalid sound name 'two words'" in log and "already has a sound 'chirp'" in log
+    window.ask_sound_name = lambda: "fresh"
+    window.ask_wavs = lambda title: []  # no files picked: no empty sound is made
+    assert not window.new_sound_dialog()
+    assert window.library.names() == ["chirp"] and window.sounds.rowCount() == 0
+
+
+def test_add_clips_goes_to_the_selected_sound(window, tmp_path):
+    window.library.add("chirp", chirp(), RATE)
+    window.library.add("door", chirp(), RATE)
+    window.add_sound("chirp")
+    window.add_sound("door")
+    window.ask_wavs = lambda title: pytest.fail("nothing is selected: no question")
+    assert not window.add_clips_dialog()  # two sounds and none selected
+    window.sounds.selectRow(1)
+    window.ask_wavs = lambda title: [take(tmp_path, "x.wav"), take(tmp_path, "y.wav")]
+    assert window.add_clips_dialog()
+    assert len(window.library.info("door").clips) == 3
+    assert window.sounds.item(1, 1).text() == "3" and window.sounds.item(0, 1).text() == "1"
+    window.set_profile(Profile())
+
+
+def test_a_new_rule_uses_the_sound_and_offers_the_others(window):
+    window.library.add("chirp", chirp(), RATE)
+    window.library.add("door", chirp(), RATE)
+    window.add_sound("door")
+    window._new_rule()
+    assert window.rules.item(0, 0).text() == "door"  # the profile's sound, ready to use
+    assert window.rules.currentColumn() == 1  # typing goes into the actions
+    assert window.sound_choices() == ["door", "chirp"]
+    delegate = window.rules.itemDelegateForColumn(0)
+    index = window.rules.model().index(0, 0)
+    editor = delegate.createEditor(window.rules.viewport(), None, index)
+    delegate.setEditorData(editor, index)
+    assert [editor.itemText(i) for i in range(editor.count())] == ["door", "chirp"]
+    assert editor.currentText() == "door"
+    editor.setCurrentText("chirp")
+    delegate.setModelData(editor, window.rules.model(), index)
+    assert window.rules.item(0, 0).text() == "chirp"
+    window.rules.item(0, 1).setText("f")
+    assert window.profile().on_sound == [SoundRule("chirp", [Key("f")])]
+    window.set_profile(Profile())
 
 
 def test_add_clip_from_a_wav(window, tmp_path):
@@ -304,7 +433,7 @@ def test_problems_are_shown_under_the_buttons(window):
 def test_start_refuses_a_replay(window, tmp_path):
     wav, _ = make_replay(tmp_path, [], 1.0)
     window.set_profile(Profile(source=f"file:{wav}", sounds={"chirp": {}}, on_start=[Key("9")]))
-    assert window.problems_label.text() == "Ready to try without keys."
+    assert window.problems_label.text() == "Ready to listen."
     assert "run it as a dry run" in window.start_only_label.text()
     assert window.start_only_label.isVisible()
     assert not window.start_run(live=True)
@@ -349,8 +478,8 @@ def test_try_without_keys_shows_status_counters_meter_and_summary(app, window, t
     phases = [s.phase for s in states]
     assert WAITING in phases and REACTING in phases and phases[-1] == STOPPED
     assert ARMED not in phases and STARTING not in phases  # no focus needed
-    assert any(t.startswith("Waiting for a sound") and t.endswith("without keys") for t in texts)
-    assert "Reacting: chirp · without keys" in texts
+    assert any(t.startswith("Waiting for a sound") and t.endswith("listening only") for t in texts)
+    assert "Reacting: chirp · listening only" in texts
     assert window.status_line.text() == "Stopped: the audio source ended"
 
     v = window.counter_values
@@ -365,7 +494,7 @@ def test_try_without_keys_shows_status_counters_meter_and_summary(app, window, t
 
     assert window.summary_box.isVisible()
     summary = window.summary.text()
-    assert "the audio source ended (tried without keys)" in summary
+    assert "the audio source ended (listening only)" in summary
     assert "5 cycles, 3 triggers (chirp 3), 2 silent, hit rate 60 %; 0:50 long" in summary
     window.open_folder_button.click()
     assert window.opened == [window.run.folder]
@@ -378,7 +507,7 @@ def test_status_line_texts_and_colours(window):
     assert status_text(Status(STARTING, remaining=4.2)) == "Starting in 5 s"
     assert status_text(Status(WAITING, elapsed=12.7)) == "Waiting for a sound (12 s)"
     assert status_text(Status(REACTING, "bite")) == "Reacting: bite"
-    assert status_text(Status(REACTING, "bite", dry_run=True)) == "Reacting: bite · without keys"
+    assert status_text(Status(REACTING, "bite", dry_run=True)) == "Reacting: bite · listening only"
     assert status_text(Status(STOPPED, "done", dry_run=True)) == "Stopped: done"
     window._show_status(Status(STOPPED, "focus lost", error=True))
     assert COLOURS["error"][0] in window.status_line.styleSheet()
@@ -407,7 +536,7 @@ def test_menu_advanced_and_buttons(window):
     window.advanced.set_expanded(True)
     assert window.record.isVisible()
     texts = {b.text() for b in window.findChildren(QPushButton)}
-    assert {"Start", "Try without keys", "Stop", "Save", "Open run folder"} <= texts
+    assert {"Start", "Listen only", "Stop", "Save", "Open run folder"} <= texts
 
 
 @pytest.mark.parametrize("size", [QSize(1150, 760), QSize(1000, 700)])
@@ -485,7 +614,7 @@ def test_the_buttons_start_live_and_dry_runs(ready_window, monkeypatch):
     monkeypatch.setattr(gui_module, "prepare", spy)
     ready_window.start_button.click()
     ready_window.try_button.click()
-    assert seen == [False, True]  # Start sends keys; Try without keys does not
+    assert seen == [False, True]  # Start sends keys; Listen only does not
     assert "spy: not started" in ready_window.problems_label.text()
 
 
@@ -612,3 +741,138 @@ def test_the_dropdown_shows_only_the_loaded_profile(make_window, tmp_path):
     window.ask_unsaved = lambda name: "discard"
     window._profile_chosen(window.profile_box.findText("c"))  # cannot be read
     assert window.path == a and window.profile_box.currentText() == "a"
+
+
+# -- key names, what would drop the keys, where settings go --------------------------------
+
+
+def test_the_action_fields_explain_steps_and_keys(window):
+    (rules_box,) = [b for b in window.findChildren(QGroupBox) if b.title().startswith("Rules")]
+    window._add_rule("bite", "9")
+    tips = {
+        "rules box": rules_box.toolTip(),
+        "on start": window.on_start.toolTip(),
+        "on silence": window.on_silence.toolTip(),
+        "rules table": window.rules.toolTip(),
+        "actions header": window.rules.horizontalHeaderItem(1).toolTip(),
+        "actions cell": window.rules.item(0, 1).toolTip(),
+    }
+    for where, tip in tips.items():
+        for part in ("wait SECONDS", "key KEY", "a-z", "0-9", "F1-F12", "Return", "Escape",
+                     "Left", "KP_Enter", "bracketleft", "need Shift", "Ctrl+F"):  # fmt: skip
+            assert part in tip, (where, part)
+    assert tips["on start"] == keys.help_text(linux_note=sys.platform != "win32")
+    window.set_profile(Profile())
+
+
+def test_what_would_drop_the_keys_blocks_only_start(make_window):
+    asked: list[str] = []
+
+    def uipi(title: str) -> list[str]:
+        asked.append(title)
+        return [f"{title!r} runs as administrator and sound-reactor does not"]
+
+    window = make_window(window_problems=uipi)
+    window.library.add("bite", chirp(), RATE)
+    window.set_profile(
+        Profile(
+            source="app:World of Warcraft",
+            target="World of Warcraft",
+            sounds={"bite": {}},
+            on_start=[Key("9")],
+        )
+    )
+    assert asked and set(asked) == {"World of Warcraft"}
+    assert window.problems_label.text() == "Ready to listen."
+    assert "runs as administrator" in window.start_only_label.text()
+    assert not window.start_run(live=True) and window.run is None
+    window.target.setCurrentText("Missing")  # not open: that is reported instead
+    window.refresh_checks()
+    assert "no window titled 'Missing'" in window.start_only_label.text()
+    assert "administrator" not in window.start_only_label.text()
+    window.set_profile(Profile())
+
+
+def test_settings_go_to_the_config_folder(make_window):
+    window = make_window(settings=None)
+    assert Path(window.settings.fileName()) == paths.gui_settings_file()
+    assert window.settings.format() == QSettings.Format.IniFormat
+    window.settings.setValue("probe", 1)
+    window.settings.sync()
+    assert paths.gui_settings_file().is_file()  # in the test's temporary config folder
+
+
+def test_a_failing_window_check_is_a_problem_line_not_an_exception(make_window):
+    calls: list[str] = []
+
+    def broken(title: str) -> list[str]:
+        calls.append(title)
+        raise OSError("[WinError 5] Access is denied")
+
+    window = make_window(window_problems=broken)
+    window.library.add("bite", chirp(), RATE)
+    window.set_profile(
+        Profile(
+            source="app:World of Warcraft",
+            target="World of Warcraft",
+            sounds={"bite": {}},
+            on_start=[Key("9")],
+        )
+    )
+    window.refresh_checks()  # again: every refresh asks, none raises
+    assert len(calls) >= 2
+    assert window.problems_label.text() == "Ready to listen."
+    assert (
+        "cannot check whether keys would reach 'World of Warcraft': OSError: [WinError 5] "
+        "Access is denied" in window.start_only_label.text()
+    )
+    assert not window.start_run(live=True) and window.run is None
+    window.set_profile(Profile())
+
+
+def library_choices(window) -> list[str]:
+    return [window.library_sounds.itemText(i) for i in range(window.library_sounds.count())]
+
+
+def test_a_removed_sound_is_offered_again(window):
+    window.library.add("chirp", chirp(), RATE)
+    window.library.add("door", chirp(), RATE)
+    window.add_sound("chirp")
+    window.refresh_sound_choices()
+    assert library_choices(window) == ["door"]
+    window.sounds.selectRow(0)
+    window.remove_sound()
+    assert window.sounds.rowCount() == 0
+    assert library_choices(window) == ["chirp", "door"]
+    window.set_profile(Profile())
+
+
+def test_one_bad_recording_among_several_in_new_sound(window, tmp_path):
+    bad = tmp_path / "bad.wav"
+    bad.write_bytes(b"this is not a WAV file")
+    window.ask_sound_name = lambda: "splash"
+    window.ask_wavs = lambda title: [take(tmp_path, "a.wav"), bad, take(tmp_path, "b.wav")]
+    assert window.new_sound_dialog()
+    assert len(window.library.info("splash").clips) == 2  # the good ones, both
+    assert window.sounds.item(0, 1).text() == "2"
+    log = window.log.toPlainText()
+    assert "error: clip not added" in log and "bad.wav" in log
+    window.set_profile(Profile())
+
+
+def test_a_new_sound_name_can_be_typed_for_a_rule(window):
+    window.library.add("chirp", chirp(), RATE)
+    window.add_sound("chirp")
+    window._add_rule("chirp", "f")
+    delegate = window.rules.itemDelegateForColumn(0)
+    index = window.rules.model().index(0, 0)
+    editor = delegate.createEditor(window.rules.viewport(), None, index)
+    delegate.setEditorData(editor, index)
+    editor.lineEdit().setText(" door ")  # typed: not one of the offered sounds
+    delegate.setModelData(editor, window.rules.model(), index)
+    assert window.rules.item(0, 0).text() == "door"
+    p = window.profile()
+    assert p.on_sound == [SoundRule("door", [Key("f")])] and "door" in p.sound_names()
+    window.refresh_checks()
+    assert "the sound 'door' has no clips in the detector library" in window.problems_label.text()
+    window.set_profile(Profile())

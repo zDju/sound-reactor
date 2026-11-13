@@ -5,11 +5,12 @@ description = "React to sound events with actions (first test: fishing in World 
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "jeepney>=0.9.0",
+    "jeepney>=0.9.0; sys_platform == 'linux'",
     "numpy>=2.5.4",
     "pyside6-essentials>=6.12.0",
-    "python-xlib>=0.33",
-    "sound-event-detector",
+    "python-xlib>=0.33; sys_platform == 'linux'",
+    # a fixed commit, as a GitHub archive: installs need no Git
+    "sound-event-detector @ https://github.com/zDju/sound-event-detector/archive/24b02ced7c68a2bb004914c930df7b2182900bb7.zip",
 ]
 
 [project.scripts]
@@ -19,6 +20,9 @@ sound-reactor = "sound_reactor.cli:main"
 requires = ["uv_build>=0.12.23,<0.13.0"]
 build-backend = "uv_build"
 
+# Development: the detector from the sibling folder, editable. Installs use the archive above
+# and need uv's --no-sources (pip ignores this table on its own):
+#   uv tool install --no-sources https://github.com/zDju/sound-reactor/archive/refs/heads/main.zip
 [tool.uv.sources]
 sound-event-detector = { path = "../sound-event-detector", editable = true }
 
