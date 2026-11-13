@@ -1,0 +1,46 @@
+[project]
+name = "sound-reactor"
+version = "0.1.0"
+description = "React to sound events with actions (first test: fishing in World of Warcraft)."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "jeepney>=0.9.0",
+    "numpy>=2.5.4",
+    "pyside6-essentials>=6.12.0",
+    "python-xlib>=0.33",
+    "sound-event-detector",
+]
+
+[project.scripts]
+sound-reactor = "sound_reactor.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+sound-event-detector = { path = "../sound-event-detector", editable = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.5",
+]
+spikes = [
+    "evdev>=2.0.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = ["spikes"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["local: replays a local recording that is not in the repository (deselected by default)"]
+addopts = "-m 'not local'"

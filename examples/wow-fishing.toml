@@ -1,0 +1,27 @@
+# Fishing in World of Warcraft (Forever client on Linux, X11 window under XWayland).
+# In the game: Fishing on key 9, Interact With Target on F, Enable Interact Key and Auto Loot on,
+# Sound in Background on. The sound "bite" is an event in the detector library
+# (~/.local/share/sound-event-detector/bite); see PLAN.md for how it was measured.
+source = "app:World of Warcraft"
+target = "World of Warcraft"
+ignore_after_action = 1.5
+start_delay = 5.0
+
+[sounds.bite]
+min_level_db = -40.0
+
+[on_start]
+actions = [{ key = "9" }]
+
+[[on_sound]]
+sound = "bite"
+actions = [{ wait = 0.25 }, { key = "f" }, { wait = 2.5 }, { key = "9" }]
+
+[on_silence]
+seconds = 30.0
+actions = [{ key = "9" }]
+
+[stop]
+max_minutes = 60.0
+max_silent_in_row = 5
+max_cycles = 100
