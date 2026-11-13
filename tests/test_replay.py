@@ -90,6 +90,9 @@ def test_replay_runs_in_audio_time_and_records(tmp_path):
     assert "CHIRP" in (folder / "log.txt").read_text()
     counters = json.loads((folder / "counters.json").read_text())
     assert counters["triggers"] == {"chirp": 3}
+    last = counters["last_trigger"]  # the chirp at 40.0, in the cycle that began at 35.0
+    assert last["sound"] == "chirp" and last["similarity"] > 0.95
+    assert last["into_cycle"] == pytest.approx(5.0, abs=0.05) and last["level_db"] < 0
     assert counters["stop_reason"] == "the audio source ended"
     assert profiles.load(folder / "profile.toml") == chirp_profile(wav)
     with wave.open(str(folder / "audio.wav")) as w:

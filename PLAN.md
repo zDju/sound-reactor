@@ -345,10 +345,12 @@ Deviations and choices:
   `~/.local/state/sound-reactor/runs/`.
 - **Live meter:** best (level-gated) similarity per sound plus the source level of the last
   block; a per-sound level of the best window is not exposed by `SoundDetector`.
-- **GUI:** action lists are edited as text (`wait 0.25, f, wait 2.5, 9`); threshold and min
-  level in the sounds table are saved as profile overrides where they differ from the library,
-  and "Save to library" writes them to the detector library; dry run is checked by default;
-  errors go to the log view, no pop-ups.
+- **GUI (reworked after the first live use):** profile left, run right (coloured status line,
+  Start / Try without keys / Stop, problems under the buttons, counters, meter bars with a
+  threshold marker, a summary with "Open run folder", log); New/Open/Save as/Replay in a
+  Profile menu; "Advanced" folded; action lists edited as text; threshold and min level edits
+  stay in the profile (no "Save to library"); remembers the last profile and the window size;
+  asks before dropping unsaved changes. The engine reports its phase through `on_state`.
 - **Screen lock (added after runs 09–10):** a live run holds
   `org.freedesktop.ScreenSaver.Inhibit` (session bus, via `jeepney`) from the switch into the
   target until it stops; failure is logged and the run continues (a lock then stops it through

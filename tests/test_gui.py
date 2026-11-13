@@ -1,4 +1,8 @@
-"""Smoke tests of the window, offscreen (conftest sets QT_QPA_PLATFORM=offscreen, no DISPLAY)."""
+"""The window, offscreen (conftest sets QT_QPA_PLATFORM=offscreen and removes DISPLAY).
+
+Settings, the unsaved-changes question and the run-folder opener are injected: nothing here
+writes to the user's configuration or opens anything.
+"""
 
 from __future__ import annotations
 
@@ -9,19 +13,28 @@ from pathlib import Path
 import numpy as np
 import pytest
 from sound_event_detector import Library, save_wav
+from sound_event_detector.capture import AppStream
 
-from fakes import RATE, chirp, make_replay
+from fakes import RATE, FakeClock, FakeKeyboard, FakeListener, chirp, make_replay
+from sound_reactor import gui as gui_module
 from sound_reactor import profile as profiles
+from sound_reactor.engine import ARMED, REACTING, STARTING, STOPPED, WAITING, Engine, Status
 from sound_reactor.profile import Key, Profile, SilenceRule, SoundRule, StopRules, Wait
+from sound_reactor.runner import Run, RunError
 
 pytest.importorskip("PySide6")
-from PySide6.QtCore import QEventLoop
+from PySide6.QtCore import QEventLoop, QSettings, QSize
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QApplication, QDoubleSpinBox
+from PySide6.QtWidgets import QApplication, QDoubleSpinBox, QPushButton
 
-from sound_reactor.gui import COL_LIVE, COL_THRESHOLD, MainWindow
+from sound_reactor.gui import COL_THRESHOLD, COLOURS, MainWindow, MeterBar, status_text
 
 EXAMPLE = Path(__file__).parent.parent / "examples" / "wow-fishing.toml"
+APPS = [  # what PipeWire lists: application name and binary
+    AppStream(1, "World of Warcraft", 100, "Wow.exe", "World of Warcraft"),
+    AppStream(2, "Firefox", 200, "firefox", "YouTube"),
+]
+WINDOWS = ["World of Warcraft", "Konsole"]
 
 
 @pytest.fixture(scope="module")
@@ -33,15 +46,35 @@ def app():
 
 
 @pytest.fixture
-def window(app, tmp_path):
-    w = MainWindow(
-        library=Library(tmp_path / "library"),
-        list_sources=lambda: ["app:Test Game"],
-        list_windows=lambda: ["Test Window"],
-    )
-    w.show()  # offscreen: nothing appears on any display
-    yield w
-    w.close()
+def make_window(app, tmp_path):
+    made: list[MainWindow] = []
+    opened: list[Path] = []
+
+    def make(**kwargs) -> MainWindow:
+        args = {
+            "library": Library(tmp_path / "library"),
+            "list_apps": lambda: list(APPS),
+            "list_windows": lambda: list(WINDOWS),
+            "settings": QSettings(str(tmp_path / "gui.ini"), QSettings.Format.IniFormat),
+            "open_folder": opened.append,
+            "ask_unsaved": lambda name: pytest.fail(f"unexpected question about {name}"),
+        }
+        args.update(kwargs)
+        w = MainWindow(**args)
+        w.opened = opened  # pyright: ignore[reportAttributeAccessIssue]
+        w.show()  # offscreen: nothing appears on any display
+        made.append(w)
+        return w
+
+    yield make
+    for w in made:
+        w.ask_unsaved = lambda name: "discard"
+        w.close()
+
+
+@pytest.fixture
+def window(make_window):
+    return make_window()
 
 
 def wait_for(app, condition, timeout: float = 30.0) -> None:
@@ -52,81 +85,25 @@ def wait_for(app, condition, timeout: float = 30.0) -> None:
         time.sleep(0.01)
 
 
+def in_profiles(name: str, p: Profile | None = None) -> Path:
+    return profiles.save(p or profiles.load(EXAMPLE), profiles.resolve(name))
+
+
+# -- the profile ---------------------------------------------------------------------------
+
+
 def test_example_profile_round_trips_through_the_window(window):
     assert window.load_path(EXAMPLE)
     assert window.profile() == profiles.load(EXAMPLE)
-    assert window.sounds.item(0, 1).text() == "0 (not in the library)"
-    assert window.source.findText("app:Test Game") >= 0
-    assert window.target.findText("Test Window") >= 0
-
-
-def test_edit_and_save(window, tmp_path):
-    window.load_path(EXAMPLE)
-    window.on_start.setText("wait 1, 9")
-    window.silence_on.setChecked(False)
-    window.max_cycles.setValue(0)
-    path = profiles.resolve("edited")
-    assert window.save_to(path)
-    saved = profiles.load(path)
-    assert saved.on_start == [Wait(1.0), Key("9")]
-    assert saved.on_silence is None and saved.stop.max_cycles is None
-    assert window.profile_box.findText("edited") >= 0
-    window.on_start.setText("wait soon")
-    assert not window.save_to(path)
-    assert "error: not saved" in window.log.toPlainText()
-
-
-def test_sounds_clips_and_library_settings(window, tmp_path):
-    wav = tmp_path / "take.wav"
-    padded = np.concatenate([np.zeros(RATE // 2), chirp(), np.zeros(RATE // 2)])
-    save_wav(wav, padded.astype(np.float32), RATE)
-    assert window.add_clip_from(wav, "chirp") is not None
-    assert window.library.names() == ["chirp"]
-    assert window.sounds.item(0, 1).text() == "1"
-    spin = window.sounds.cellWidget(0, COL_THRESHOLD)
-    assert isinstance(spin, QDoubleSpinBox)
-    spin.setValue(0.9)
-    assert window.profile().sounds == {"chirp": {"threshold": 0.9}}
-    window.save_sound_to_library()
-    assert window.library.settings("chirp")["threshold"] == 0.9
-    assert window.profile().sounds == {"chirp": {}}
-
-
-def test_dry_run_replay_from_the_window(app, window, tmp_path):
-    wav, _ = make_replay(tmp_path, [5.0, 12.0, 40.0], 50.0)
-    window.set_profile(
-        Profile(
-            source=f"file:{wav}",
-            sounds={"chirp": {}},
-            on_start=[Key("9")],
-            on_sound=[SoundRule("chirp", [Wait(0.25), Key("f"), Wait(2.5), Key("9")])],
-            on_silence=SilenceRule(10.0, [Key("9")]),
-        )
-    )
-    assert window.dry_run.isChecked()
-    assert window.start_run()
-    wait_for(app, lambda: window.last_result is not None)
-    result = window.last_result
-    assert result is not None and result.counters.triggers == {"chirp": 3}
-    assert window.counters.text().startswith("Stopped: the audio source ended")
-    assert window.log.toPlainText().count("CHIRP") == 3
-    assert window.sounds.item(0, COL_LIVE).text().endswith("dBFS")
-    assert window.start_button.isEnabled() and not window.stop_button.isEnabled()
-
-
-def test_a_replay_cannot_send_keys(window, tmp_path):
-    wav, _ = make_replay(tmp_path, [], 1.0)
-    window.set_profile(Profile(source=f"file:{wav}", target="Test Window", sounds={"chirp": {}}))
-    window.dry_run.setChecked(False)
-    assert not window.start_run()
-    assert "run it as a dry run" in window.log.toPlainText()
-    assert window.run is None
+    assert not window.dirty and window.windowTitle() == "wow-fishing — sound-reactor"
+    assert window.sounds.item(0, 1).text() == "0 (none in the library)"
+    assert window.path_label.text() == str(EXAMPLE)
 
 
 def test_values_survive_the_window_unchanged(window):
     p = Profile(
-        source="app:Test Game",
-        target="Test Window",
+        source="app:World of Warcraft",
+        target="World of Warcraft",
         sounds={
             "bite": {"threshold": 0.835, "min_level_db": -40.25, "cooldown": 1.5},
             "door": {"threshold": 0.75},  # equal to the library's value, still kept
@@ -139,13 +116,72 @@ def test_values_survive_the_window_unchanged(window):
         start_delay=7.125,
     )
     window.set_profile(p)
-    assert window.profile() == p
+    assert window.profile() == p and not window.dirty
+
+
+def test_threshold_edits_go_into_the_profile_not_the_library(window):
+    window.library.add("chirp", chirp(), RATE)
+    window.add_sound("chirp")
     spin = window.sounds.cellWidget(0, COL_THRESHOLD)
     assert isinstance(spin, QDoubleSpinBox)
-    spin.setValue(0.9)  # a change by the user is taken as shown
-    assert window.profile().sounds["bite"]["threshold"] == 0.9
-    spin.setValue(0.75)  # back to the library's value: no override
-    assert "threshold" not in window.profile().sounds["bite"]
+    spin.setValue(0.9)
+    assert window.profile().sounds == {"chirp": {"threshold": 0.9}}
+    spin.setValue(0.75)  # the library's value again: no override
+    assert window.profile().sounds == {"chirp": {}}
+    assert window.library.settings("chirp")["threshold"] == 0.75
+    assert not (window.library.path("chirp") / "event.toml").exists()
+    texts = [b.text() for b in window.findChildren(QPushButton)]
+    assert "Save to library" not in texts
+    window.set_profile(Profile())  # drop the change
+
+
+def test_add_clip_from_a_wav(window, tmp_path):
+    wav = tmp_path / "take.wav"
+    padded = np.concatenate([np.zeros(RATE // 2), chirp(), np.zeros(RATE // 2)])
+    save_wav(wav, padded.astype(np.float32), RATE)
+    assert window.add_clip_from(wav, "chirp") is not None
+    assert window.library.names() == ["chirp"]
+    assert window.sounds.item(0, 1).text() == "1"
+    window.set_profile(Profile())
+
+
+def test_unsaved_changes_show_in_the_title_and_save_clears_them(window):
+    path = in_profiles("fishing")
+    window.load_path(path)
+    window.on_start.setText("wait 1, 9")
+    window.refresh_checks()
+    assert window.dirty and window.windowTitle().startswith("fishing*")
+    assert window.save()
+    assert not window.dirty and window.windowTitle().startswith("fishing —")
+    assert profiles.load(path).on_start == [Wait(1.0), Key("9")]
+
+
+def test_unsaved_changes_are_asked_about(make_window):
+    a, b = in_profiles("a"), in_profiles("b")
+    answers: list[str] = []
+    window = make_window(ask_unsaved=lambda name: answers.pop(0))
+    window.refresh_profiles()
+    window.load_path(a)
+    index_b = window.profile_box.findText("b")
+
+    window.on_start.setText("wait 1, 9")
+    answers.append("cancel")
+    window._profile_chosen(index_b)
+    assert window.path == a and window.on_start.text() == "wait 1, 9"
+
+    answers.append("discard")
+    window._profile_chosen(index_b)
+    assert window.path == b and profiles.load(a).on_start == [Key("9")]
+
+    window.on_start.setText("wait 2, 9")
+    answers.append("save")
+    window._profile_chosen(window.profile_box.findText("a"))
+    assert window.path == a and profiles.load(b).on_start == [Wait(2.0), Key("9")]
+
+    window.on_start.setText("wait 3, 9")
+    answers.append("cancel")
+    assert not window.close() and window.isVisible()
+    assert answers == []
 
 
 def test_save_never_overwrites_a_profile_opened_elsewhere(window, tmp_path):
@@ -160,23 +196,27 @@ def test_save_never_overwrites_a_profile_opened_elsewhere(window, tmp_path):
     assert outside.read_bytes() == original
     assert profiles.load(copy).on_start == [Wait(1.0), Key("9")]
     assert window.path == copy
-    assert window.save()  # now it is in the profiles folder: saved in place
     window.load_path(outside)
+    window.on_start.setText("wait 5, 9")
     assert not window.save()  # a copy exists already: refused, nothing overwritten
-    assert "use Save as" in window.log.toPlainText()
+    assert "Save as" in window.log.toPlainText()
     assert outside.read_bytes() == original
-    assert profiles.load(copy).on_start == [Wait(1.0), Key("9")]
+    window.set_profile(Profile())  # drop the change
 
 
-def test_problems_while_starting_are_logged(window, tmp_path, monkeypatch):
-    wav, _ = make_replay(tmp_path, [], 1.0)
-    window.set_profile(Profile(source=f"file:{wav}", sounds={"chirp": {}}))
-    blocker = tmp_path / "not-a-folder"
-    blocker.write_text("")
-    monkeypatch.setenv("XDG_STATE_HOME", str(blocker))  # run folders cannot be created
-    assert not window.start_run()
-    assert "error: not started: NotADirectoryError" in window.log.toPlainText()
-    assert window.start_button.isEnabled()
+def test_remembers_the_last_profile_and_the_window_size(make_window, tmp_path):
+    path = in_profiles("fishing")
+    first = make_window()
+    first.load_path(path)
+    first.resize(1000, 700)
+    assert first.close()
+    second = make_window()
+    second.load_initial()
+    assert second.path == path
+    # The offscreen screen is only 800x600, so restoring clamps the width to fit it (down to
+    # the window's minimum); the height shows that the saved geometry was applied.
+    assert second.size().height() == 700 and second.size() != QSize(1150, 760)
+    assert (tmp_path / "gui.ini").is_file()  # the injected settings, not the user's
 
 
 def test_a_profile_that_is_not_text_is_refused(window, tmp_path):
@@ -184,3 +224,391 @@ def test_a_profile_that_is_not_text_is_refused(window, tmp_path):
     bad.write_bytes(b"source = \xff\xfe\n")
     assert not window.load_path(bad)
     assert "not a UTF-8 text file" in window.log.toPlainText()
+
+
+# -- source, target and problems -----------------------------------------------------------
+
+
+def type_source(window, text: str) -> None:
+    """Type ``text`` into the source box a character at a time, then finish editing."""
+    line = window.source.lineEdit()
+    for i in range(1, len(text) + 1):
+        line.setText(text[:i])
+        line.textEdited.emit(text[:i])
+        assert window.target.currentText() == "", f"filled in while typing {text[:i]!r}"
+    line.editingFinished.emit()
+
+
+def pick_source(window, text: str) -> None:
+    window.source.setCurrentText(text)
+    window.source.activated.emit(window.source.findText(text))
+
+
+def test_an_app_source_fills_in_its_window(window):
+    type_source(window, "app:Firefox")  # "app:f" must not pick "World of Warcraft"
+    assert window.target.currentText() == ""  # no window is called Firefox
+    pick_source(window, "app:World of Warcraft")
+    assert window.target.currentText() == "World of Warcraft"
+    pick_source(window, "app:Firefox")  # filled in before, no match now: cleared
+    assert window.target.currentText() == ""
+    window.target.setCurrentText("")
+    type_source(window, "app:wow.exe")  # the binary finds "World of Warcraft"
+    assert window.target.currentText() == "World of Warcraft"
+
+    line = window.target.lineEdit()
+    line.setText("Konsole")
+    line.textEdited.emit("Konsole")  # typed by the user: left alone from now on
+    pick_source(window, "app:Firefox")
+    assert window.target.currentText() == "Konsole"
+    window.set_profile(Profile())
+
+
+def test_an_app_is_found_by_its_binary_as_capture_does(window):
+    window.library.add("bite", chirp(), RATE)
+    for source, playing in (("app:Wow.exe", True), ("app:wow", True), ("app:100", True),
+                            ("app:Nothing", False)):  # fmt: skip
+        window.set_profile(Profile(source=source, target="World of Warcraft", sounds={"bite": {}}))
+        assert ("nothing called" not in window.problems_label.text()) == playing, source
+
+
+def test_problems_are_shown_under_the_buttons(window):
+    window.set_profile(
+        Profile(
+            source="app:Nothing",
+            target="Missing",
+            sounds={"bite": {}},
+            on_start=[Key("9")],
+        )
+    )
+    text = window.problems_label.text()
+    assert "the sound 'bite' has no clips" in text
+    assert "nothing called 'Nothing' is playing" in text
+    assert "no window titled 'Missing'" not in text  # blocks only Start: shown apart, in grey
+    assert window.start_only_label.text().startswith("Start only: no window titled 'Missing'")
+    assert not window.start_run(live=True) and not window.start_run(live=False)
+    assert window.run is None
+
+    window.library.add("bite", chirp(), RATE)
+    window.source.setCurrentText("app:World of Warcraft")
+    window.target.setCurrentText("World of Warcraft")
+    window.refresh_checks()
+    assert window.problems_label.text() == "Ready to start."
+    assert not window.start_only_label.isVisible()
+
+    window.on_start.setText("wait soon")
+    window.refresh_checks()
+    assert "'wait' needs a number" in window.problems_label.text()
+    window.set_profile(Profile())
+
+
+def test_start_refuses_a_replay(window, tmp_path):
+    wav, _ = make_replay(tmp_path, [], 1.0)
+    window.set_profile(Profile(source=f"file:{wav}", sounds={"chirp": {}}, on_start=[Key("9")]))
+    assert window.problems_label.text() == "Ready to try without keys."
+    assert "run it as a dry run" in window.start_only_label.text()
+    assert window.start_only_label.isVisible()
+    assert not window.start_run(live=True)
+    assert window.run is None
+
+
+def test_problems_while_starting_are_shown(window, tmp_path, monkeypatch):
+    wav, _ = make_replay(tmp_path, [], 1.0)
+    window.set_profile(Profile(source=f"file:{wav}", sounds={"chirp": {}}))
+    blocker = tmp_path / "not-a-folder"
+    blocker.write_text("")
+    monkeypatch.setenv("XDG_STATE_HOME", str(blocker))  # run folders cannot be created
+    assert not window.start_run(live=False)
+    assert "NotADirectoryError" in window.problems_label.text()
+    assert window.try_button.isEnabled()
+
+
+# -- running -------------------------------------------------------------------------------
+
+
+def test_try_without_keys_shows_status_counters_meter_and_summary(app, window, tmp_path):
+    wav, _ = make_replay(tmp_path, [5.0, 12.0, 40.0], 50.0)
+    window.set_profile(
+        Profile(
+            source=f"file:{wav}",
+            sounds={"chirp": {}},
+            on_start=[Key("9")],
+            on_sound=[SoundRule("chirp", [Wait(0.25), Key("f"), Wait(2.5), Key("9")])],
+            on_silence=SilenceRule(10.0, [Key("9")]),
+        )
+    )
+    states: list[Status] = []
+    texts: list[str] = []
+    peaks: list[float] = []
+    window.bridge.state.connect(states.append)
+    window.bridge.state.connect(lambda s: texts.append(window.status_line.text()))
+    window.bridge.meter.connect(lambda m: peaks.append(m.peaks["chirp"]))
+    assert window.start_run(live=False)
+    assert not window.start_button.isEnabled() and window.stop_button.isEnabled()
+    wait_for(app, lambda: window.last_result is not None)
+
+    phases = [s.phase for s in states]
+    assert WAITING in phases and REACTING in phases and phases[-1] == STOPPED
+    assert ARMED not in phases and STARTING not in phases  # no focus needed
+    assert any(t.startswith("Waiting for a sound") and t.endswith("without keys") for t in texts)
+    assert "Reacting: chirp · without keys" in texts
+    assert window.status_line.text() == "Stopped: the audio source ended"
+
+    v = window.counter_values
+    assert v["cycles"].text() == "5" and v["triggers"].text() == "chirp 3"
+    assert v["silent"].text() == "2 (0 in a row)" and v["hit_rate"].text() == "60 %"
+    assert v["elapsed"].text() == "0:50"
+    assert v["last"].text().startswith("chirp · ") and "similarity" in v["last"].text()
+
+    bar = window.meter_bars["chirp"]
+    assert bar.threshold == 0.75 and max(peaks) >= 0.75
+    assert window.level_label.text().endswith("dBFS")
+
+    assert window.summary_box.isVisible()
+    summary = window.summary.text()
+    assert "the audio source ended (tried without keys)" in summary
+    assert "5 cycles, 3 triggers (chirp 3), 2 silent, hit rate 60 %; 0:50 long" in summary
+    window.open_folder_button.click()
+    assert window.opened == [window.run.folder]
+    assert window.start_button.isEnabled() and not window.stop_button.isEnabled()
+
+
+def test_status_line_texts_and_colours(window):
+    assert status_text(None) == "Not running"
+    assert status_text(Status(ARMED, "Game")) == "Armed: switch into Game (Alt+Tab)"
+    assert status_text(Status(STARTING, remaining=4.2)) == "Starting in 5 s"
+    assert status_text(Status(WAITING, elapsed=12.7)) == "Waiting for a sound (12 s)"
+    assert status_text(Status(REACTING, "bite")) == "Reacting: bite"
+    assert status_text(Status(REACTING, "bite", dry_run=True)) == "Reacting: bite · without keys"
+    assert status_text(Status(STOPPED, "done", dry_run=True)) == "Stopped: done"
+    window._show_status(Status(STOPPED, "focus lost", error=True))
+    assert COLOURS["error"][0] in window.status_line.styleSheet()
+    window._show_status(Status(REACTING, "bite"))
+    assert COLOURS[REACTING][0] in window.status_line.styleSheet()
+
+
+def test_meter_bar(app):
+    bar = MeterBar("bite", 0.8)
+    bar.set_score(0.85)
+    assert bar.above and bar.text() == "bite  0.85 / 0.80"
+    bar.set_score(0.5)
+    assert not bar.above
+    bar.set_score(-1.0)  # nothing scored (too quiet)
+    assert bar.score is None and not bar.above
+    bar.resize(300, 26)
+    assert not bar.grab().isNull()  # paints
+
+
+# -- layout --------------------------------------------------------------------------------
+
+
+def test_menu_advanced_and_buttons(window):
+    assert set(window.actions_by_name) == {"new", "open", "save", "save_as", "replay", "quit"}
+    assert not window.advanced.expanded and not window.record.isVisible()
+    window.advanced.set_expanded(True)
+    assert window.record.isVisible()
+    texts = {b.text() for b in window.findChildren(QPushButton)}
+    assert {"Start", "Try without keys", "Stop", "Save", "Open run folder"} <= texts
+
+
+@pytest.mark.parametrize("size", [QSize(1150, 760), QSize(1000, 700)])
+def test_no_horizontal_scrolling(app, window, size):
+    window.load_path(EXAMPLE)
+    window.advanced.set_expanded(True)
+    window.resize(size)
+    app.processEvents()
+    assert window.size() == size  # the window can be this small
+    assert window.config_scroll.horizontalScrollBar().maximum() == 0
+
+
+# -- runs with fake audio and a fake keyboard ----------------------------------------------
+
+
+class SlowListener(FakeListener):
+    """Fake audio whose clock runs about twenty times faster than real time, so that a run
+    lasts long enough to click or close the window during it."""
+
+    def next(self, until):
+        time.sleep(0.005)
+        return super().next(until)
+
+
+def live_profile() -> Profile:
+    return Profile(
+        source="app:World of Warcraft",
+        target="World of Warcraft",
+        sounds={"chirp": {}},
+        on_start=[Key("9")],
+        on_sound=[SoundRule("chirp", [Wait(0.25), Key("f"), Wait(2.5), Key("9")])],
+        on_silence=SilenceRule(30.0, [Key("9")]),
+    )
+
+
+@pytest.fixture
+def fake_runs(monkeypatch, tmp_path):
+    """``prepare`` builds an engine on fakes; the keyboard is ``run.engine.keyboard``."""
+    calls: list[dict] = []
+
+    def prepare(p, **kwargs):
+        calls.append(kwargs)
+        clock = FakeClock()
+        sounds = [(8.0, "chirp", 0.9), (30.0, "chirp", 0.9), (60.0, "chirp", 0.9)]
+        engine = Engine(
+            p,
+            SlowListener(clock, sounds),
+            FakeKeyboard(clock),
+            clock,
+            focused=None if kwargs["dry_run"] else (lambda: clock.t >= 1.0),
+            dry_run=kwargs["dry_run"],
+            **{k: v for k, v in kwargs.items() if k.startswith("on_")},
+        )
+        return Run(engine, tmp_path / "run", None)
+
+    monkeypatch.setattr(gui_module, "prepare", prepare)
+    return calls
+
+
+@pytest.fixture
+def ready_window(window):
+    window.library.add("chirp", chirp(), RATE)
+    window.set_profile(live_profile())
+    assert window.problems_label.text() == "Ready to start."
+    return window
+
+
+def test_the_buttons_start_live_and_dry_runs(ready_window, monkeypatch):
+    seen: list[bool] = []
+
+    def spy(p, **kwargs):
+        seen.append(kwargs["dry_run"])
+        raise RunError("spy: not started")
+
+    monkeypatch.setattr(gui_module, "prepare", spy)
+    ready_window.start_button.click()
+    ready_window.try_button.click()
+    assert seen == [False, True]  # Start sends keys; Try without keys does not
+    assert "spy: not started" in ready_window.problems_label.text()
+
+
+def test_stop_during_a_run(app, ready_window, fake_runs):
+    ready_window.start_button.click()
+    keyboard = ready_window.run.engine.keyboard
+    wait_for(app, lambda: keyboard.pressed)  # armed, switched in, first key
+    ready_window.stop_button.click()
+    wait_for(app, lambda: ready_window.last_result is not None)
+    assert ready_window.last_result.reason == "stopped from the window"
+    assert ready_window.status_line.text() == "Stopped: stopped from the window"
+    assert ready_window.start_button.isEnabled() and not ready_window.stop_button.isEnabled()
+    assert not fake_runs[0]["dry_run"]
+
+
+def test_closing_stops_the_run_before_asking(app, ready_window, fake_runs):
+    ready_window.start_button.click()
+    engine = ready_window.run.engine
+    wait_for(app, lambda: engine.keyboard.pressed)
+    ready_window.on_start.setText("wait 1, 9")  # an unsaved change
+    seen = {}
+
+    def ask(name: str) -> str:
+        seen["running"] = engine.running
+        seen["keys"] = len(engine.keyboard.pressed)
+        time.sleep(0.5)  # the question stays open: about 10 s of the run's time
+        seen["keys later"] = len(engine.keyboard.pressed)
+        return "cancel"
+
+    ready_window.ask_unsaved = ask
+    assert not ready_window.close()  # cancelled: the window stays
+    assert seen["running"] is False and seen["keys later"] == seen["keys"]
+    wait_for(app, lambda: ready_window.last_result is not None)
+    assert ready_window.last_result.reason == "the window is closing"
+    assert ready_window.isVisible() and not engine.running
+
+
+def test_new_and_open_ask_about_unsaved_changes(make_window):
+    a, b = in_profiles("a"), in_profiles("b")
+    asked: list[str] = []
+    window = make_window(ask_unsaved=lambda name: asked.append(name) or "cancel")
+    window.load_path(a)
+    window.on_start.setText("wait 1, 9")
+    window.new_profile()
+    assert not window.open_profile(b)
+    assert asked == ["a", "a"]
+    assert window.path == a and window.on_start.text() == "wait 1, 9"
+    window.ask_unsaved = lambda name: "discard"
+    assert window.open_profile(b) and window.path == b
+
+
+def test_the_last_profile_falls_back_when_gone_or_broken(make_window, tmp_path):
+    a = in_profiles("a")
+    window = make_window()
+    window.settings.setValue("last_profile", str(tmp_path / "deleted.toml"))
+    window.load_initial()
+    assert window.path == a and "error" not in window.log.toPlainText()
+    assert window.settings.value("last_profile") == str(a.resolve())  # stored absolute
+
+    broken = profiles.resolve("broken")
+    broken.write_text("[stop]\nmax_cycles = 0\n")
+    second = make_window()
+    second.settings.setValue("last_profile", str(broken))
+    second.load_initial()
+    assert second.path == a  # the next one that can be read
+    assert second.log.toPlainText().count("error:") == 1  # tried once, not twice
+
+    third = make_window()
+    third.load_initial("typo")
+    assert third.path is None
+    assert "cannot read" in third.log.toPlainText()
+
+
+def test_edits_are_checked_by_themselves(app, window):
+    path = in_profiles("fishing")
+    window.load_path(path)
+    window.on_start.setText("wait 1, 9")
+    window.source.setCurrentText("app:Nothing")
+    assert not window.windowTitle().startswith("fishing*")  # not yet: debounced
+    wait_for(app, lambda: window.windowTitle().startswith("fishing*"), timeout=3.0)
+    assert "nothing called 'Nothing'" in window.problems_label.text()
+    window.set_profile(Profile())
+
+
+def test_the_log_follows_new_lines_unless_scrolled_up(app, window):
+    bar = window.log.verticalScrollBar()
+    for i in range(300):
+        window.append_log(f"line {i}")
+    # laid out (lazily) and followed to the end
+    wait_for(app, lambda: bar.maximum() > 200 and bar.value() == bar.maximum(), timeout=3.0)
+    bar.setValue(10)  # the user scrolls up to read
+    for i in range(100):
+        window.append_log(f"more {i}")
+    app.processEvents()
+    assert bar.value() == 10
+    bar.setValue(bar.maximum())  # back at the end: follows again
+    for i in range(100):
+        window.append_log(f"again {i}")
+    wait_for(app, lambda: bar.value() == bar.maximum(), timeout=3.0)
+
+
+def test_the_dropdown_shows_only_the_loaded_profile(make_window, tmp_path):
+    a, _ = in_profiles("a"), in_profiles("b")
+    broken = profiles.resolve("c")
+    broken.write_text("not toml [")
+    window = make_window(ask_unsaved=lambda name: "cancel")
+    window.refresh_profiles()
+    window.load_path(a)
+    assert window.profile_box.currentText() == "a"
+
+    outside = tmp_path / "elsewhere" / "b.toml"  # same name as one in the list
+    outside.parent.mkdir()
+    outside.write_text(EXAMPLE.read_text())
+    window.load_path(outside)
+    assert window.profile_box.currentIndex() == -1
+
+    window.new_profile()
+    window.on_start.setText("wait 1, 9")
+    window._profile_chosen(window.profile_box.findText("b"))  # cancelled
+    assert window.profile_box.currentIndex() == -1 and window.path is None
+
+    window.load_path(a)
+    window.on_start.setText("wait 1, 9")
+    window.ask_unsaved = lambda name: "discard"
+    window._profile_chosen(window.profile_box.findText("c"))  # cannot be read
+    assert window.path == a and window.profile_box.currentText() == "a"

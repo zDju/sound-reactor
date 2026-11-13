@@ -32,6 +32,7 @@ from .engine import (
     Listener,
     Meter,
     Result,
+    Status,
     SystemClock,
 )
 from .listen import LiveListener, Recorder, ReplayListener
@@ -138,6 +139,7 @@ def prepare(
     on_log: Callable[[str], object] | None = None,
     on_counters: Callable[[Counters], object] | None = None,
     on_meter: Callable[[Meter], object] | None = None,
+    on_state: Callable[[Status], object] | None = None,
     on_finish: Callable[[Result], object] | None = None,
 ) -> Run:
     """Check ``p``, open what it needs and return a run that has not started yet.
@@ -181,7 +183,7 @@ def prepare(
         log_file = (folder / "log.txt").open("a", encoding="utf-8")
         run = _assemble(
             p, events, target, folder, recording, log_file, dry_run,
-            on_log, on_counters, on_meter, on_finish,
+            on_log, on_counters, on_meter, on_state, on_finish,
         )  # fmt: skip
     except BaseException:
         if target is not None:
@@ -203,6 +205,7 @@ def _assemble(
     on_log: Callable[[str], object] | None,
     on_counters: Callable[[Counters], object] | None,
     on_meter: Callable[[Meter], object] | None,
+    on_state: Callable[[Status], object] | None,
     on_finish: Callable[[Result], object] | None,
 ) -> Run:
     lock = threading.Lock()
@@ -272,6 +275,7 @@ def _assemble(
         on_log=log,
         on_counters=counters,
         on_meter=on_meter,
+        on_state=on_state,
         on_finish=finish,
     )
     return Run(engine, folder, recording)

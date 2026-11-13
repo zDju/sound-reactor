@@ -32,6 +32,12 @@ limit is reached, or on Ctrl+C, SIGTERM, SIGHUP or Stop. Keys go to the target w
 keeps the screen from locking (`org.freedesktop.ScreenSaver.Inhibit`), because sent keys do not
 count as user activity and a screen lock would take focus.
 
+**The window** (`sound-reactor gui`) has the profile on the left and the run on the right: a
+coloured status line, *Start* (live), *Try without keys* (dry run) and *Stop*, what would block a
+start, counters, a meter per sound with a marker at its threshold, and the log. Threshold and
+min level changed in the sounds table are saved in the profile; otherwise the library's values
+apply. It remembers the last profile and its size (`~/.config/sound-reactor/gui.conf`).
+
 A **dry run** logs the keys instead of sending them. A replay (`file:` source, dry run only)
 runs in audio time, faster than real time: waits and timeouts are seconds of the recording, and
 log times are positions in it.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -296,3 +297,130 @@ def test_live_run_needs_the_minimum_start_delay():
     with pytest.raises(ValueError, match="start delay of at least 5 s"):
         Engine(p, FakeListener(clock), FakeKeyboard(clock), clock, focused=lambda: True)
     Engine(p, FakeListener(clock), ForbiddenKeyboard(), clock, dry_run=True)  # dry runs may
+
+
+# -- status for the window ---------------------------------------------------------------------
+
+from sound_reactor.engine import (  # noqa: E402
+    ACTING,
+    ARMED,
+    CONNECTING,
+    REACTING,
+    STARTING,
+    STOPPED,
+    WAITING,
+    Trigger,
+)
+
+
+def phases(states) -> list[tuple[str, str]]:
+    """The phases in order, each once (ticks repeat the current one)."""
+    out: list[tuple[str, str]] = []
+    for s in states:
+        if not out or out[-1] != (s.phase, s.detail):
+            out.append((s.phase, s.detail))
+    return out
+
+
+def test_status_follows_a_live_run():
+    states = []
+    result, *_ = run(
+        fishing(max_cycles=2),
+        [(15.0, "bite", 0.9)],
+        setup=lambda engine, clock: setattr(engine, "on_state", states.append),
+    )
+    assert phases(states) == [
+        (CONNECTING, "app:World of Warcraft"),
+        (ARMED, "World of Warcraft"),
+        (STARTING, "World of Warcraft"),
+        (ACTING, "start"),
+        (WAITING, ""),
+        (REACTING, "bite"),
+        (WAITING, ""),
+        (STOPPED, result.reason),
+    ]
+    starting = [s for s in states if s.phase == STARTING]
+    assert starting[0].remaining == pytest.approx(5.0, abs=0.11)
+    assert starting[-1].remaining < 1.0  # counts down once per second
+    reacted = next(i for i, s in enumerate(states) if s.phase == REACTING)
+    waiting = [s for s in states[reacted:] if s.phase == WAITING]  # the second cycle
+    assert waiting[0].remaining == pytest.approx(30.0, abs=0.01)
+    assert waiting[0].elapsed == 0.0
+    steps = [round(b.elapsed - a.elapsed, 2) for a, b in pairwise(waiting[1:5])]
+    assert steps == [1.0, 1.0, 1.0]  # then once per second
+    # run time counts from the first key (7.0); cycle 2 began with the recast at 18.05
+    assert waiting[-1].run_seconds == pytest.approx(waiting[-1].elapsed + 11.05, abs=0.01)
+    assert not any(s.dry_run for s in states)
+    assert states[-1].phase == STOPPED and not states[-1].error
+    assert result.counters.last_trigger == Trigger("bite", 8.0, 0.9, -30.0)
+
+
+def test_status_of_a_dry_run_and_of_an_error():
+    states = []
+    run(
+        fishing(max_cycles=1),
+        dry_run=True,
+        setup=lambda engine, clock: setattr(engine, "on_state", states.append),
+    )
+    assert [p for p, _ in phases(states)] == [CONNECTING, ACTING, WAITING, STOPPED]
+    assert all(s.dry_run for s in states)
+    assert (ACTING, "silence") not in phases(states)  # max_cycles stops before on_silence
+
+    states.clear()
+    run(
+        fishing(),
+        focus=lambda t: 2 <= t < 20,
+        setup=lambda engine, clock: setattr(engine, "on_state", states.append),
+    )
+    assert states[-1].phase == STOPPED and "lost focus" in states[-1].detail
+    assert not states[-1].error  # focus loss is a normal way to stop
+
+    states.clear()
+    run(
+        fishing(),
+        disconnect_at=20.0,
+        setup=lambda engine, clock: setattr(engine, "on_state", states.append),
+    )
+    assert states[-1].phase == STOPPED and states[-1].error
+
+
+def test_silence_actions_have_their_own_status():
+    states = []
+    run(
+        fishing(max_cycles=2),
+        setup=lambda engine, clock: setattr(engine, "on_state", states.append),
+    )
+    assert (ACTING, "silence") in phases(states)
+
+
+def test_a_failing_status_callback_still_ends_the_run_properly():
+    finished = []
+
+    def broken(status):
+        raise RuntimeError("the window is gone")
+
+    def setup(engine, clock):
+        engine.on_state = broken
+        engine.on_finish = finished.append
+
+    result, kb, listener, logs, _ = run(fishing(max_cycles=1), setup=setup)
+    assert finished == [result]  # on_finish was called, with the result
+    assert result.error and "the window is gone" in result.reason
+    assert listener.stopped and kb.pressed == []
+    assert any(line.endswith(f"stopped: {result.reason}") for line in logs)
+
+
+def test_a_status_callback_failing_only_at_the_end():
+    finished = []
+
+    def fails_when_stopped(status):
+        if status.phase == STOPPED:
+            raise RuntimeError("no")
+
+    def setup(engine, clock):
+        engine.on_state = fails_when_stopped
+        engine.on_finish = finished.append
+
+    result, kb, listener, *_ = run(fishing(max_cycles=1), setup=setup)
+    assert finished == [result] and "max_cycles" in result.reason and not result.error
+    assert keys(kb) == [(7.0, "9")] and listener.stopped

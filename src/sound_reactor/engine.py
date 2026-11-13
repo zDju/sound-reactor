@@ -27,6 +27,7 @@ inhibits nothing.
 
 from __future__ import annotations
 
+import contextlib
 import math
 import threading
 import time
@@ -64,6 +65,16 @@ class Meter:
     level_db: float
 
 
+@dataclass(frozen=True)
+class Trigger:
+    """The sound that ended a cycle."""
+
+    sound: str
+    into_cycle: float  # seconds from the cycle start to the start of the sound
+    similarity: float
+    level_db: float
+
+
 @dataclass
 class Counters:
     cycles: int = 0  # cycles ended by a trigger or by silence
@@ -73,6 +84,30 @@ class Counters:
     silent_in_row: int = 0
     ignored: int = 0  # sounds heard but ignored (too soon after a key, during actions)
     minutes: float = 0.0  # since the first action
+    last_trigger: Trigger | None = None
+
+
+# Phases of a run, in the order they normally come (see Status).
+CONNECTING = "connecting"  # waiting for the audio source
+ARMED = "armed"  # live: waiting for the switch into the target window (detail: its title)
+STARTING = "starting"  # live: the start delay after the switch (remaining: seconds left)
+ACTING = "acting"  # running on_start or on_silence actions (detail: "start" or "silence")
+WAITING = "waiting"  # a cycle: waiting for a sound (elapsed; remaining until on_silence)
+REACTING = "reacting"  # running a sound's actions (detail: the sound)
+STOPPED = "stopped"  # detail: the reason
+
+
+@dataclass(frozen=True)
+class Status:
+    """Where a run is, sent when the phase changes and about once a second (clock time)."""
+
+    phase: str
+    detail: str = ""
+    elapsed: float = 0.0  # seconds in this phase
+    remaining: float | None = None  # seconds until the phase ends by itself, if it does
+    run_seconds: float = 0.0  # since the first action
+    dry_run: bool = False
+    error: bool = False  # with STOPPED: the run ended because of a problem
 
 
 @dataclass(frozen=True)
@@ -171,6 +206,7 @@ class Engine:
         on_log: Callable[[str], object] = _nothing,
         on_counters: Callable[[Counters], object] = _nothing,
         on_meter: Callable[[Meter], object] | None = None,
+        on_state: Callable[[Status], object] | None = None,
         on_finish: Callable[[Result], object] = _nothing,
         poll: float = POLL,
     ) -> None:
@@ -191,6 +227,7 @@ class Engine:
         self.on_log = on_log
         self.on_counters = on_counters
         self.on_meter = on_meter
+        self.on_state = on_state
         self.on_finish = on_finish
         self.poll = poll
         self.rules = {r.sound: r for r in profile.on_sound}
@@ -202,6 +239,7 @@ class Engine:
         self._t0: float | None = None  # clock time of the first action
         self._last_key = -math.inf
         self._next_meter = math.inf
+        self._phase: tuple[str, str, float, float | None] = (CONNECTING, "", 0.0, None)
 
     # -- control (any thread) ------------------------------------------------------------------
 
@@ -235,12 +273,14 @@ class Engine:
         reason, error = "stopped", False
         try:
             self._describe()
+            self._set_phase(CONNECTING, self.profile.source)
             self.listener.start()
             self._next_meter = self.clock.now() + 1.0
             self._await_audio()
             self._arm()
             self._t0 = self.clock.now()
             self._log("start")
+            self._set_phase(ACTING, "start")
             self._actions(self.profile.on_start)
             while True:
                 self._cycle()
@@ -248,25 +288,42 @@ class Engine:
             reason, error = s.reason, s.error
         except Exception as e:
             reason, error = f"error: {type(e).__name__}: {e}", True
-            for line in traceback.format_exc().rstrip().splitlines():
-                self._log(line)
+            with contextlib.suppress(Exception):  # the log itself may be what failed
+                for line in traceback.format_exc().rstrip().splitlines():
+                    self._log(line)
         finally:
-            self._uninhibit()
+            self.result = self._wind_down(reason, error)
+            self.on_finish(self.result)
+        return self.result
+
+    def _wind_down(self, reason: str, error: bool) -> Result:
+        """Release what the run holds and report the end. A failing callback here (log, status)
+        is ignored, so that every step runs and :attr:`on_finish` is always called."""
+
+        def stop_listener() -> None:
             try:
                 self.listener.stop()
             except Exception as e:
                 self._log(f"error while stopping the audio: {type(e).__name__}: {e}")
-            self._update_minutes()
-            c = self.counters
-            self.result = Result(reason, replace(c, triggers=dict(c.triggers)), error)
-            self._log(f"stopped: {reason}")
-            triggers = ", ".join(f"{k} {v}" for k, v in c.triggers.items()) or "none"
-            self._log(
+
+        for step in (self._uninhibit, stop_listener):
+            with contextlib.suppress(Exception):
+                step()
+        self._update_minutes()
+        c = self.counters
+        result = Result(reason, replace(c, triggers=dict(c.triggers)), error)
+        triggers = ", ".join(f"{k} {v}" for k, v in c.triggers.items()) or "none"
+        for step in (
+            lambda: self._set_phase(STOPPED, reason, error=error),
+            lambda: self._log(f"stopped: {reason}"),
+            lambda: self._log(
                 f"done: {c.cycles} cycles, {c.keys} keys{' (dry run)' if self.dry_run else ''}, "
                 f"triggers: {triggers}; silent cycles {c.silences}; ignored sounds {c.ignored}"
-            )
-            self.on_finish(self.result)
-        return self.result
+            ),
+        ):
+            with contextlib.suppress(Exception):
+                step()
+        return result
 
     def _describe(self) -> None:
         p = self.profile
@@ -302,6 +359,7 @@ class Engine:
             return
         target = self.profile.target
         self._log(f"armed: switch to the window {target!r} to start")
+        self._set_phase(ARMED, target)
         seen_other = False
         while True:
             self._check(focus=False)
@@ -311,6 +369,7 @@ class Engine:
                 break
             self._pause(self.poll, "before the start", focus=False)
         self._log(f"{target!r} focused; starting in {self.profile.start_delay:g} s")
+        self._set_phase(STARTING, target, deadline=self.clock.now() + self.profile.start_delay)
         self._inhibit()
         self._pause(self.profile.start_delay, "before the start")
 
@@ -334,9 +393,10 @@ class Engine:
         self._inhibited = False
         try:
             self.inhibitor.release()
-            self._log("screen lock inhibition released")
         except Exception as e:
             self._log(f"could not release the screen lock inhibition: {type(e).__name__}: {e}")
+        else:
+            self._log("screen lock inhibition released")
 
     def _cycle(self) -> None:
         p, c = self.profile, self.counters
@@ -345,6 +405,7 @@ class Engine:
         deadline = start + silence.seconds if silence is not None else math.inf
         wait = f": waiting up to {silence.seconds:g} s" if silence is not None else ""
         self._log(f"cycle {c.cycles + 1}{wait}")
+        self._set_phase(WAITING, deadline=deadline)
         while (h := self._wait(deadline)) is not None:
             since_key = h.started - self._last_key
             if h.at < start:
@@ -357,11 +418,13 @@ class Engine:
                 c.cycles += 1
                 c.silent_in_row = 0
                 c.triggers[h.sound] = c.triggers.get(h.sound, 0) + 1
+                c.last_trigger = Trigger(h.sound, h.started - start, h.similarity, h.level_db)
                 self._log(
                     f"{h.sound.upper()} {h.started - start:.1f} s into the cycle: similarity "
                     f"{h.similarity:.2f}, level {h.level_db:.1f} dBFS ({h.template})"
                 )
                 self._changed()
+                self._set_phase(REACTING, h.sound)  # after the counters: they include it
                 self._actions(self.rules[h.sound].actions)
                 self._check_limits()
                 return
@@ -372,6 +435,7 @@ class Engine:
         self._log(f"nothing in {silence.seconds:g} s")
         self._changed()
         self._check_limits()  # before the actions: they only start another cycle
+        self._set_phase(ACTING, "silence")
         self._actions(silence.actions)
 
     def _check_limits(self) -> None:
@@ -444,11 +508,43 @@ class Engine:
             raise _Stop(f"time limit of {limit:g} min reached (max_minutes)")
 
     def _tick(self) -> None:
+        """Once per clock second: the meter, and the status with its times brought up to date."""
         now = self.clock.now()
-        if self.on_meter is None or now < self._next_meter:
+        if now < self._next_meter:
             return
         self._next_meter = now + 1.0
-        self.on_meter(self.listener.meter())
+        if self.on_meter is not None:
+            self.on_meter(self.listener.meter())
+        self._send_status()
+
+    def _set_phase(
+        self,
+        phase: str,
+        detail: str = "",
+        *,
+        deadline: float | None = None,
+        error: bool = False,
+    ) -> None:
+        deadline = None if deadline is None or math.isinf(deadline) else deadline
+        self._phase = (phase, detail, self.clock.now(), deadline)
+        self._send_status(error=error)
+
+    def _send_status(self, *, error: bool = False) -> None:
+        if self.on_state is None:
+            return
+        phase, detail, since, deadline = self._phase
+        now = self.clock.now()
+        self.on_state(
+            Status(
+                phase,
+                detail,
+                elapsed=now - since,
+                remaining=None if deadline is None else max(0.0, deadline - now),
+                run_seconds=0.0 if self._t0 is None else now - self._t0,
+                dry_run=self.dry_run,
+                error=error,
+            )
+        )
 
     # -- reporting -----------------------------------------------------------------------------
 
