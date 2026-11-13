@@ -26,7 +26,7 @@ from sound_reactor.runner import Run, RunError
 
 pytest.importorskip("PySide6")
 from PySide6.QtCore import QEventLoop, QSettings, QSize
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QFontMetrics, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QDoubleSpinBox,
@@ -550,6 +550,9 @@ def test_menu_advanced_and_buttons(window):
 
 @pytest.mark.parametrize("size", [QSize(1150, 760), QSize(1000, 700)])
 def test_no_horizontal_scrolling(app, window, size):
+    char = QFontMetrics(app.font()).averageCharWidth()
+    if char > 9:  # a 9 pt font is about 6 px; the offscreen platform on Windows has no real fonts
+        pytest.skip(f"text is drawn {char} px per character here, not with a real font")
     window.load_path(EXAMPLE)
     window.advanced.set_expanded(True)
     window.resize(size)
