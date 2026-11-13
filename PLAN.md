@@ -27,7 +27,7 @@ cycle, keyboard input, and safety.
 - XTEST into XWayland (`python-xlib`) → fake key presses for X11 windows.
 - `xdotool` / `ydotool` are not installed (not needed).
 
-**Bite detection** (measured, see the detector's README)
+**Bite detection** (measured, see the detector's `docs/how-it-works.md`)
 - PipeWire stream "World of Warcraft", captured alone (`app:World of Warcraft`).
 - Event `bite` in `~/.local/share/sound-event-detector/bite`: 4 splash clips, pitch ±6 %,
   0.3 s templates, threshold 0.8, min level −35 dBFS. Two sessions: own bites 9/9, no false

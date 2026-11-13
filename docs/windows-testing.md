@@ -178,11 +178,18 @@ happen? Does the screen stay on?
 - What you saw in step 6, your Windows version (`winver`), and anything that failed in steps 1–3
   (the console output).
 
-| Message | What to do |
-|---|---|
-| `... runs as administrator and sound-reactor does not` | Restart the game normally, or run PowerShell "as administrator" for sound-reactor too. |
-| `cannot check whether ... runs as administrator` | The game runs as administrator, under another user, or is protected by anti-cheat software. Run sound-reactor from a PowerShell opened with "Run as administrator". |
-| `key '9' needs a modifier on this layout` | On your keyboard layout 9 needs Shift (AZERTY, Czech...). Bind Fishing to a key that needs none (e.g. F2) and put that key instead of `9` in the profile (twice: `on_start` and the rule; also `on_silence`). |
-| `no window titled '...' is open` | `doctor` shows the game's window titles; put the right one in `target =`. |
-| `nothing called '...' is playing audio now` | The game must be running and making sound; take the name from `sounddetector devices`. |
-| keys arrive nowhere, no error | Report it, with the doctor output and the run's `log.txt`. |
+If something fails, the message tells what to do:
+
+- `... runs as administrator and sound-reactor does not`: restart the game normally, or run
+  PowerShell "as administrator" for sound-reactor too.
+- `cannot check whether ... runs as administrator`: the game runs as administrator, under another
+  user, or is protected by anti-cheat software. Run sound-reactor from a PowerShell opened with
+  "Run as administrator".
+- `key '9' needs a modifier on this layout`: on your keyboard layout 9 needs Shift (AZERTY,
+  Czech...). Bind Fishing to a key that needs none (e.g. F2) and put that key instead of `9` in
+  the profile (`on_start`, the rule and `on_silence`).
+- `no window titled '...' is open`: `doctor` shows the game's window titles; put the right one in
+  `target =`.
+- `nothing called '...' is playing audio now`: the game must be running and making sound; take
+  the name from `sounddetector devices`.
+- Keys arrive nowhere, with no error: report it, with the doctor output and the run's `log.txt`.
