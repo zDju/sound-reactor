@@ -14,7 +14,7 @@ A profile is a TOML file, by default in ``~/.config/sound-reactor/profiles/<name
 
     [[on_sound]]
     sound = "bite"
-    actions = [{ wait = 0.25 }, { key = "f" }, { wait = 2.5 }, { key = "9" }]
+    actions = [{ wait = 0.25 }, { key = "f" }, { wait = 1 }, { key = "9" }]
 
     [on_silence]
     seconds = 30

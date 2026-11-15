@@ -58,9 +58,9 @@ def keys(keyboard: FakeKeyboard) -> list[tuple[float, str]]:
 
 def test_fishing_cycle_starts_after_switch_and_delay_then_casts_loots_and_recasts():
     result, kb, listener, logs, _ = run(fishing(max_cycles=3), [(17.0, "bite", 0.9)])
-    # switch in at 2 s, +5 s delay: cast; bite heard 17.3, Interact 0.25 s later, recast 2.5 s
+    # switch in at 2 s, +5 s delay: cast; bite heard 17.3, Interact 0.25 s later, recast 1 s
     # after that; then two silent cycles of 30 s, and the limit stops before a third recast.
-    assert keys(kb) == [(7.0, "9"), (17.55, "f"), (20.05, "9"), (50.05, "9")]
+    assert keys(kb) == [(7.0, "9"), (17.55, "f"), (18.55, "9"), (48.55, "9")]
     assert result.counters.cycles == 3
     assert result.counters.triggers == {"bite": 1}
     assert result.counters.silences == 2
@@ -80,13 +80,13 @@ def test_ignores_sounds_after_keys_and_during_actions_once_per_cycle():
         (7.5, "bite", 0.9),  # 0.5 s after the cast: the cast itself
         (15.0, "bite", 0.9),  # trigger
         (15.5, "bite", 0.95),  # reported while its actions run: once per cycle
-        (18.5, "bite", 0.9),  # 0.45 s after the recast
+        (17.0, "bite", 0.9),  # 0.45 s after the recast
         (25.0, "bite", 0.9),  # trigger
     ]
     result, kb, _, logs, _ = run(fishing(max_cycles=2), sounds)
     c = result.counters
     assert c.triggers == {"bite": 2} and c.ignored == 3 and c.silences == 0
-    assert keys(kb) == [(7.0, "9"), (15.55, "f"), (18.05, "9"), (25.55, "f"), (28.05, "9")]
+    assert keys(kb) == [(7.0, "9"), (15.55, "f"), (16.55, "9"), (25.55, "f"), (26.55, "9")]
     assert sum("reported while actions were running" in line for line in logs) == 1
     assert sum("after the last key" in line for line in logs) == 2
 
@@ -239,7 +239,7 @@ def test_dry_run_does_not_inhibit():
 
 def test_trigger_reaching_max_cycles_runs_its_actions_then_stops():
     result, kb, *_ = run(fishing(max_cycles=1), [(15.0, "bite", 0.9)])
-    assert keys(kb) == [(7.0, "9"), (15.55, "f"), (18.05, "9")]
+    assert keys(kb) == [(7.0, "9"), (15.55, "f"), (16.55, "9")]
     assert result.counters.cycles == 1 and "max_cycles" in result.reason and not result.error
 
 
@@ -365,8 +365,8 @@ def test_status_follows_a_live_run():
     assert waiting[0].elapsed == 0.0
     steps = [round(b.elapsed - a.elapsed, 2) for a, b in pairwise(waiting[1:5])]
     assert steps == [1.0, 1.0, 1.0]  # then once per second
-    # run time counts from the first key (7.0); cycle 2 began with the recast at 18.05
-    assert waiting[-1].run_seconds == pytest.approx(waiting[-1].elapsed + 11.05, abs=0.01)
+    # run time counts from the first key (7.0); cycle 2 began with the recast at 16.55
+    assert waiting[-1].run_seconds == pytest.approx(waiting[-1].elapsed + 9.55, abs=0.01)
     assert not any(s.dry_run for s in states)
     assert states[-1].phase == STOPPED and not states[-1].error
     assert result.counters.last_trigger == Trigger("bite", 8.0, 0.9, -30.0)

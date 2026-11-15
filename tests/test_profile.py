@@ -16,7 +16,7 @@ def test_example_profile():
     assert p.sounds == {"bite": {"min_level_db": -40.0}}
     assert p.on_start == [Key("9")]
     assert p.on_sound[0].sound == "bite"
-    assert p.on_sound[0].actions == [Wait(0.25), Key("f"), Wait(2.5), Key("9")]
+    assert p.on_sound[0].actions == [Wait(0.25), Key("f"), Wait(1.0), Key("9")]
     assert p.on_silence == profiles.SilenceRule(30.0, [Key("9")])
     assert p.stop == profiles.StopRules(60.0, 5, 100)
     assert (p.ignore_after_action, p.start_delay) == (1.5, 5.0)

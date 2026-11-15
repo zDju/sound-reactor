@@ -22,7 +22,7 @@ actions = [{ key = "9" }]
 
 [[on_sound]]
 sound = "bite"
-actions = [{ wait = 0.25 }, { key = "f" }, { wait = 2.5 }, { key = "9" }]
+actions = [{ wait = 0.25 }, { key = "f" }, { wait = 1.0 }, { key = "9" }]
 
 [on_silence]                       # nothing heard in this long: these actions, new cycle
 seconds = 30.0

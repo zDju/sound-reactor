@@ -473,8 +473,25 @@ Warcraft`), en-US layout; development setup from the two clones (`uv sync`, Pyth
 - A profile saved by Windows PowerShell 5.1 (`Set-Content -Encoding utf8`) starts with a byte
   order mark and was "not valid TOML"; profiles and the detector's `event.toml` are now read
   as `utf-8-sig` (detector pin moved to 0cd981b for it).
-- Not tried yet: Windows 10, switching away or holding a key to stop, closing the console during a run, the
+- Not tried yet: Windows 10, holding a key to stop, closing the console during a run, the
   elevation mismatch, other keyboard layouts.
+
+### Windows, longer runs (2026-11-14 and 15)
+
+- About 3,300 cycles in all, about 3,130 bites (≈94%), no tool errors, no false triggers.
+  Longest run: 600 cycles in 184 min, stopped at `max_cycles`, 574 bites, 26 silent cycles
+  (never more than two in a row). Bites at −49 to −35 dBFS, none below −50.
+- The wait after F went from 2.5 s to 1 s (examples and `docs/profiles.md` now use 1 s):
+  386/400 bites in the first three runs and the same share of silent cycles as with 2.5 s,
+  ≈18 s per cycle instead of ≈19.
+- Similarity: mean 0.92–0.95, minimum 0.80–0.82 in almost every run, so the 0.8 threshold
+  is at the edge; it stays (Linux background reached 0.72).
+- Silent cycles come in waves from the game: one morning ~33% for an hour, then ~1%.
+  Screenshots taken 27 s into silent cycles showed the bobber in the water and the Fishing
+  channel running, so the fish did not bite; the headset and the 1 s wait made no difference.
+- Stop from the window's Stop button and stop by switching away from the game both work.
+- The bag fills at ~15 catches per slot (chests and grey items take their own slots); the
+  tool does not see the bag, so long runs need room.
 
 ## Not decided yet
 
