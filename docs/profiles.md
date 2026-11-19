@@ -15,7 +15,7 @@ ignore_after_action = 1.5          # sounds starting this soon after a key are i
 start_delay = 5.0
 
 [sounds.bite]                      # an event of the detector library; overrides optional
-min_level_db = -40.0
+min_level_db = -55.0
 
 [on_start]
 actions = [{ key = "9" }]

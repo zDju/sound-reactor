@@ -258,6 +258,10 @@ class Engine:
         self._stop = threading.Event()
         self._stop_reason = "stopped"
         self._thread: threading.Thread | None = None
+        # set when run() has finished, after on_finish; join() and running use it, not the
+        # thread: on Python 3.12 a Thread.join() interrupted by Ctrl+C marks the thread as ended
+        # while it still runs, and the CLI would leave before the run's wind-down
+        self._done = threading.Event()
         self._t0: float | None = None  # clock time of the first action
         self._last_key = -math.inf
         self._next_meter = math.inf
@@ -281,13 +285,12 @@ class Engine:
     def join(self, timeout: float | None = None) -> bool:
         """Wait for the background run to end; True if it has."""
         if self._thread is not None:
-            self._thread.join(timeout)
-            return not self._thread.is_alive()
+            return self._done.wait(timeout)
         return True
 
     @property
     def running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        return self._thread is not None and not self._done.is_set()
 
     # -- the run -------------------------------------------------------------------------------
 
@@ -314,8 +317,11 @@ class Engine:
                 for line in traceback.format_exc().rstrip().splitlines():
                     self._log(line)
         finally:
-            self.result = self._wind_down(reason, error)
-            self.on_finish(self.result)
+            try:
+                self.result = self._wind_down(reason, error)
+                self.on_finish(self.result)
+            finally:
+                self._done.set()
         return self.result
 
     def _wind_down(self, reason: str, error: bool) -> Result:

@@ -493,6 +493,23 @@ Warcraft`), en-US layout; development setup from the two clones (`uv sync`, Pyth
 - The bag fills at ~15 catches per slot (chests and grey items take their own slots); the
   tool does not see the bag, so long runs need room.
 
+### Linux again (2026-11-19)
+
+- Both clones fast-forwarded to the Windows commits, `uv sync`, test suites green (197 and
+  112). The user's own profiles now also wait 1 s after F.
+- The first live run, still at `min_level_db = -40`, had two silent cycles although the fish
+  bit. A recording of the next 5 minutes held 17 bites at −48.4 to −38.7 dBFS, similarity
+  0.90–0.98: −40 lets 3 of them through, −55 all 17; nothing else reached 0.7.
+- The bite is about 10 dB quieter than on 2026-11-13 (−26 to −35). The game has one stream, at
+  100%, not muted; the cause is not known (the game's own volume settings, perhaps).
+- At −55 (both own profiles, now also `examples/wow-fishing.toml`): 40 cycles in 11 min,
+  40 bites, no silent cycle, no false trigger; similarity 0.90–0.98, level −48.8 to −38.7
+  dBFS; the recast 1 s after F works. Stopped by switching away.
+- Ctrl+C in `sound-reactor run` ended the process at once, without the run's wind-down (no
+  `stopped` line, counters without a stop reason, exit code 1): on Python 3.12 a
+  `Thread.join()` interrupted by Ctrl+C marks the thread as ended while it still runs. The
+  engine now signals its end with its own event; a test simulates Ctrl+C.
+
 ## Not decided yet
 
 Language/stack follows the detector (Python 3.12+, uv, pytest, ruff). Vision only if question 1

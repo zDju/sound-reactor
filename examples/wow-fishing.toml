@@ -8,7 +8,9 @@ ignore_after_action = 1.5
 start_delay = 5.0
 
 [sounds.bite]
-min_level_db = -40.0
+# The splash measured -48.8 to -38.7 dBFS on 2026-11-19 (40 bites; -26 to -35 on 2026-11-13):
+# -40 misses most of them.
+min_level_db = -55.0
 
 [on_start]
 actions = [{ key = "9" }]

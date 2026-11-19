@@ -7,7 +7,7 @@ A profile is a TOML file, by default in ``~/.config/sound-reactor/profiles/<name
     target = "World of Warcraft"         # title of the window that receives keys
 
     [sounds.bite]                         # detector event from the library; optional overrides
-    min_level_db = -40
+    min_level_db = -55
 
     [on_start]
     actions = [{ key = "9" }]

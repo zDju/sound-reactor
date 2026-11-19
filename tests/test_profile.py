@@ -13,7 +13,7 @@ EXAMPLE = Path(__file__).parent.parent / "examples" / "wow-fishing.toml"
 def test_example_profile():
     p = profiles.load(EXAMPLE)
     assert p.source == "app:World of Warcraft" and p.target == "World of Warcraft"
-    assert p.sounds == {"bite": {"min_level_db": -40.0}}
+    assert p.sounds == {"bite": {"min_level_db": -55.0}}
     assert p.on_start == [Key("9")]
     assert p.on_sound[0].sound == "bite"
     assert p.on_sound[0].actions == [Wait(0.25), Key("f"), Wait(1.0), Key("9")]

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import _thread
 import json
 import logging
 import signal
 import sys
+import threading
 import time
 import wave
 from dataclasses import replace
@@ -386,6 +388,42 @@ def test_cli_stops_cleanly_on_sigterm_and_sighup(tmp_path, capsys, monkeypatch, 
     assert f"stopped: {cli.STOP_SIGNALS[sig]}" in capsys.readouterr().out
     (counters,) = (tmp_path / "runs").glob("*/counters.json")
     assert json.loads(counters.read_text())["stop_reason"] == cli.STOP_SIGNALS[sig]
+
+
+def test_cli_stops_cleanly_on_ctrl_c(tmp_path, capsys, monkeypatch):
+    # Ctrl+C while the CLI waits for a run that is still going. On Python 3.12 an interrupted
+    # Thread.join() marks the thread as ended although it still runs, and the CLI used to leave
+    # at once, without the run's wind-down (no "stopped" line, counters without a stop reason).
+    wav, _ = make_replay(tmp_path, CHIRPS, LENGTH)
+    path = profiles.save(chirp_profile(wav), tmp_path / "p.toml")
+    real_prepare = cli.prepare
+
+    def prepare_then_interrupt(*args, **kwargs):
+        run = real_prepare(*args, **kwargs)
+        engine = run.engine
+        real_run, real_stop, real_start = engine.run, engine.stop, engine.start
+        asked = threading.Event()
+
+        def stop(reason: str = "stopped") -> None:
+            real_stop(reason)
+            asked.set()
+
+        def long_run():  # a live run would still be going when Ctrl+C comes
+            asked.wait(10.0)
+            return real_run()
+
+        def start_then_interrupt():
+            real_start()
+            threading.Timer(0.3, _thread.interrupt_main).start()  # Ctrl+C, on every platform
+
+        engine.run, engine.stop, engine.start = long_run, stop, start_then_interrupt
+        return run
+
+    monkeypatch.setattr(cli, "prepare", prepare_then_interrupt)
+    code = main(["run", str(path), "--dry-run", "--runs-dir", str(tmp_path / "runs")])
+    assert "stopped: Ctrl+C" in capsys.readouterr().out and code == 0
+    (counters,) = (tmp_path / "runs").glob("*/counters.json")
+    assert json.loads(counters.read_text())["stop_reason"] == "Ctrl+C"
 
 
 # -- a real recording (local only, never in the repository) ------------------------------------

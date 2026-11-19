@@ -116,7 +116,7 @@ sounddetector events
 
 `events` should show `bite: 4 clip(s), threshold 0.8, ..., min level -55 dBFS, ..., pitch ±6%,
 first 0.3s of each clip` and the clip files, each 0.8 s long (`add` printed the times). The
-minimum level is lower than on Linux (−40): on Windows the splash measured −48 to −37 dBFS.
+splash measured −48 to −37 dBFS on Windows: a minimum of −40 would miss most bites.
 
 Check it, still fishing by hand, 5 casts:
 
